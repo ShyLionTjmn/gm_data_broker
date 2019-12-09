@@ -22,7 +22,6 @@ import (
   . "github.com/ShyLionTjmn/aux"
   . "github.com/ShyLionTjmn/decode_dev"
   "github.com/ShyLionTjmn/redsub"
-  //. "github.com/ShyLionTjmn/decode_dev"
 
 )
 
@@ -316,6 +315,7 @@ func main() {
 
   redis_loaded := false
   queue_data_sub_launched := false
+  http_launched := false
 
   var red redis.Conn
 
@@ -363,6 +363,16 @@ MAIN_LOOP:
       wg.Add(1)
       queue_data_sub_launched = true
       go queue_data_sub(queue_data_sub_stop, &wg)
+    }
+
+    if redis_loaded && !http_launched {
+      fmt.Println("Starting http listener")
+      _stop_ch := make(chan string, 1)
+      stop_channels = append(stop_channels, _stop_ch)
+
+      wg.Add(1)
+      http_launched = true
+      go http_server(_stop_ch, &wg)
     }
 
     main_timer := time.NewTimer(DB_REFRESH_TIME * time.Second)
