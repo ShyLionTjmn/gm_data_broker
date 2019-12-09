@@ -12,7 +12,7 @@ import (
   "errors"
   "strings"
   "strconv"
-  "encoding/json"
+  _ "encoding/json"
 
   "github.com/gomodule/redigo/redis"
   "github.com/marcsauter/single"
@@ -249,6 +249,9 @@ L66:  for !stop_signalled {
   }
 }
 
+const TRY_OPEN_FILES uint64=65536
+var max_open_files uint64
+
 func main() {
 
   defer func() { fmt.Println("main return") } ()
@@ -268,6 +271,37 @@ func main() {
   }
   defer single_run.TryUnlock()
 
+  var rLimit syscall.Rlimit
+  err = syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rLimit)
+  if err != nil {
+    fmt.Fprintf(os.Stderr, "Error getting ulimit")
+    return
+  }
+
+  max_open_files = rLimit.Cur
+
+  if rLimit.Max != rLimit.Cur {
+    rLimit.Cur = rLimit.Max
+  }
+
+  err = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &rLimit)
+  if err != nil {
+    fmt.Fprintf(os.Stderr, "Error raising ulimit")
+  } else {
+    max_open_files = rLimit.Cur
+
+    if rLimit.Cur < TRY_OPEN_FILES {
+      rLimit.Cur = TRY_OPEN_FILES
+      rLimit.Max = TRY_OPEN_FILES
+
+      err = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &rLimit)
+      if err == nil {
+        max_open_files = rLimit.Cur
+      }
+    }
+  }
+
+  fmt.Println("Max open files:", max_open_files)
 
   sig_ch := make(chan os.Signal, 1)
   signal.Notify(sig_ch, syscall.SIGHUP)
@@ -299,20 +333,24 @@ MAIN_LOOP:
 
       dev_map, err = redis.StringMap(red.Do("HGETALL", "dev_list"))
       if err == nil {
+        total_ips := uint64(len(dev_map))
         var wg_ sync.WaitGroup
         for ip, run := range dev_map {
           if ip_reg.MatchString(ip) {
             //fmt.Println("Load IP", ip)
-chech ulimit with syscall
-            wg_.Add(1)
-            go process_ip_data(&wg_, ip, run != "run")
+            if max_open_files > total_ips+20 {
+              wg_.Add(1)
+              go process_ip_data(&wg_, ip, run != "run")
+            } else {
+              process_ip_data(nil, ip, run != "run")
+            }
           }
         }
         wg_.Wait()
         redis_loaded = true
-j, err := json.MarshalIndent(devs, "", "  ")
-    if err != nil { return }
-    fmt.Println(string(j))
+//j, err := json.MarshalIndent(devs, "", "  ")
+//    if err != nil { return }
+//    fmt.Println(string(j))
 
       }
     }
