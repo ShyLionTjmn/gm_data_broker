@@ -12,7 +12,9 @@ import (
   "errors"
   "strings"
   "strconv"
-  _ "encoding/json"
+  "context"
+  "encoding/json"
+  "net/http"
 
   "github.com/gomodule/redigo/redis"
   "github.com/marcsauter/single"
@@ -43,7 +45,7 @@ var ip_reg *regexp.Regexp
 
 var errInterrupted = errors.New("Interrupted")
 
-var globalMutex = &sync.Mutex{}
+var globalMutex = &sync.RWMutex{}
 
 var red_state_mutex = &sync.Mutex{}
 var red_good int64
@@ -93,7 +95,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, paused bool) {
   raw, err = GetRawRed(red, ip)
   if err != nil { return }
 
-  device := Dev{ Opt_m: true, Opt_a: true, Dev_ip: ip }
+  device := Dev{ Opt_m: false, Opt_a: false, Dev_ip: ip }
 
   err = device.Decode(raw)
   if err != nil { return }
@@ -189,6 +191,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, paused bool) {
     devs[dev_id] = dev
   } else {
     // check what's changed
+    devs[dev_id] = dev
   }
 }
 
@@ -220,6 +223,11 @@ L66:  for !stop_signalled {
           }
           break L66
         case reply := <-rsub.C:
+          a := strings.Split(reply, ":")
+          if len(a) == 2 && a[0] == "0" && ip_reg.MatchString(a[1]) {
+            wg.Add(1)
+            go process_ip_data(wg, a[1], false)
+          }
           fmt.Println(time.Now().Format("15:04:05"), reply)
         }
       }
@@ -246,6 +254,52 @@ L66:  for !stop_signalled {
       }
     }
   }
+}
+
+func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
+  req.ParseForm()
+  globalMutex.RLock()
+  j, err := json.MarshalIndent(devs, "", "  ")
+  globalMutex.RUnlock()
+
+  if err != nil {
+    http.Error(w, err.Error(), http.StatusInternalServerError)
+    return
+  }
+
+  w.Header().Add("Content-Type", "text/javascript")
+  w.Write(j)
+}
+
+
+func http_server(stop chan string, wg *sync.WaitGroup) {
+  defer wg.Done()
+  s := &http.Server{
+    Addr:       ":8181",
+  }
+
+  server_shut := make(chan struct{})
+
+  go func() {
+    <-stop
+    fmt.Println("Shutting down HTTP server")
+    ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(500 * time.Millisecond))
+    defer cancel()
+
+    shut_err := s.Shutdown(ctx)
+    if shut_err != nil {
+      fmt.Printf("HTTP server Shutdown: %v\n", shut_err)
+    }
+    close(server_shut)
+  }()
+
+  http.HandleFunc("/", myHttpHandlerRoot)
+
+  http_err := s.ListenAndServe()
+  if http_err != http.ErrServerClosed {
+    fmt.Println("HTTP server shot down with error:", http_err)
+  }
+  <-server_shut
 }
 
 const TRY_OPEN_FILES uint64=65536
@@ -348,9 +402,6 @@ MAIN_LOOP:
         }
         wg_.Wait()
         redis_loaded = true
-//j, err := json.MarshalIndent(devs, "", "  ")
-//    if err != nil { return }
-//    fmt.Println(string(j))
 
       }
     }
