@@ -43,11 +43,17 @@ var red_db string=REDIS_DB
 const IP_REGEX=`^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$`
 var ip_reg *regexp.Regexp
 
-var errInterrupted = errors.New("Interrupted")
-
 var globalMutex = &sync.RWMutex{}
+//locks this maps:
+var devs = make(M)
+var data = make(M)
+var data["l2_links"] = make(M)
+var data["l3_links"] = make(M)
+var data["dev_list"] = make(M)
+
 
 var red_state_mutex = &sync.Mutex{}
+//locks this vars
 var red_good int64
 var red_bad int64
 
@@ -68,9 +74,7 @@ func redState(ok bool) {
   }
 }
 
-var devs M
-
-func process_ip_data(wg *sync.WaitGroup, ip string, paused bool) {
+func process_ip_data(wg *sync.WaitGroup, ip string) {
   if wg != nil {
     defer wg.Done()
   }
@@ -91,6 +95,16 @@ func process_ip_data(wg *sync.WaitGroup, ip string, paused bool) {
       red.Do("SET", "ip_proc_error."+ip, ip_err)
     }
   }()
+
+  var dev_list_state string
+  dev_list_state, err = redis.String(red.Do("HGET", "dev_list", ip))
+  if err != nil {
+    if err == redis.ErrNil {
+      //device removed from dev_list, just ignore it
+      err = nil
+    }
+    return
+  }
 
   raw, err = GetRawRed(red, ip)
   if err != nil { return }
@@ -115,7 +129,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, paused bool) {
 
   last_seen := int64(0)
   overall_status := "ok"
-  if paused {
+  if dev_list_state != "run" {
     overall_status = "paused"
   }
 
@@ -187,6 +201,17 @@ func process_ip_data(wg *sync.WaitGroup, ip string, paused bool) {
     }
   }
 
+  if dev.EvM("lldp_ports") && dev.Evs("locChassisId") {
+    for _, port_h := range dev.VM("lldp_ports") {
+      if port_h.(M).EvM("neighbours") {
+        for seq, nei_h := range port_h.(M).VM("neighbours") {
+          is_alt := 0
+          norm_link_id := l2l_key(dev.Vs("locChassisId"), 
+        }
+      }
+    }
+  }
+
   if !devs.EvM(dev_id) {
     devs[dev_id] = dev
   } else {
@@ -226,7 +251,7 @@ L66:  for !stop_signalled {
           a := strings.Split(reply, ":")
           if len(a) == 2 && a[0] == "0" && ip_reg.MatchString(a[1]) {
             wg.Add(1)
-            go process_ip_data(wg, a[1], false)
+            go process_ip_data(wg, a[1])
           }
           fmt.Println(time.Now().Format("15:04:05"), reply)
         }
@@ -362,7 +387,6 @@ func main() {
   signal.Notify(sig_ch, syscall.SIGTERM)
   signal.Notify(sig_ch, syscall.SIGQUIT)
 
-  devs = make(M)
 
   var wg sync.WaitGroup
   var stop_channels []chan string
@@ -389,14 +413,14 @@ MAIN_LOOP:
       if err == nil {
         total_ips := uint64(len(dev_map))
         var wg_ sync.WaitGroup
-        for ip, run := range dev_map {
+        for ip, _ := range dev_map {
           if ip_reg.MatchString(ip) {
             //fmt.Println("Load IP", ip)
             if max_open_files > total_ips+20 {
               wg_.Add(1)
-              go process_ip_data(&wg_, ip, run != "run")
+              go process_ip_data(&wg_, ip)
             } else {
-              process_ip_data(nil, ip, run != "run")
+              process_ip_data(nil, ip)
             }
           }
         }
