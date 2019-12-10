@@ -201,15 +201,110 @@ func process_ip_data(wg *sync.WaitGroup, ip string) {
     }
   }
 
+  check_links := make([]string, 0)
+
   if dev.EvM("lldp_ports") && dev.Evs("locChassisId") {
-    for _, port_h := range dev.VM("lldp_ports") {
+    for port_index, port_h := range dev.VM("lldp_ports") {
       if port_h.(M).EvM("neighbours") {
         for seq, nei_h := range port_h.(M).VM("neighbours") {
-          is_alt := 0
-          norm_link_id := l2l_key(dev.Vs("locChassisId"), 
+          rcid := nei_h.(M).Vs("RemChassisId")
+          rport_id := nei_h.(M).Vs("RemPortId")
+          norm_link_id := l2l_key(dev.Vs("locChassisId"), port_h.(M).Vs("port_id"), rcid, rport_id)
+          alt_link_id := norm_link_id //SNR bug, when port id is ifName in PDU, but ifIndex in locPortID
+          if port_h.(M).Evs("ifName") {
+            alt_link_id = l2l_key(dev.Vs("locChassisId"), port_h.(M).Vs("ifName"), rcid, rport_id)
+          }
+
+          link_id := norm_link_id
+
+          if !data.EvM("l2_links", link_id) && data.EvM("l2_links", alt_link_id) {
+            link_id = alt_link_id
+          }
+
+          if data.EvM("l2_links", link_id) {
+            link_h := data.VM("l2_links", link_id)
+            if link_h.Vs("_creator") == dev.Vs("locChassisId") {
+              continue
+            }
+            if link_h.Vi("_complete") == 1 {
+              continue
+            }
+            leg1_h := link_h.VM("1")
+            leg1_h["Port"] = port_index
+            leg1_h["DevId"] = dev_id
+
+            if port_h.(M).Evs("ifName") {
+              leg1_h["ifName"] = port_h.(M).Vs("ifName")
+              if link_h.Evs("0", "ifName") {
+                rifname := link_h.Vs("0", "ifName")
+                rdevid := link_h.Vs("0", "DevId")
+
+                if devs.EvM(rdevid, "interfaces", rifname) {
+                  link_h["_complete"] = int64(1)
+                  check_links = append(check_links, link_id)
+                }
+              }
+            }
+
+
+          } else {
+            norm_link_h := data.MkM("l2_links", norm_link_id)
+
+            norm_link_h["_creator"] = dev.Vs("locChassisId")
+            norm_link_h["_complete"] = int64(0)
+            norm_link_h["_alt"] = int64(0)
+            norm_link_h["_alt_link_id"] = alt_link_id
+
+            leg0_h := norm_link_h.MkM("0")
+            leg0_h["ChassisId"] = dev.Vs("locChassisId")
+            leg0_h["ChassisIdSubtype"] = dev.VA("locChassisIdSubtype")
+            leg0_h["PortId"] = port_h.(M).Vs("port_id")
+            leg0_h["PortIdSubtype"] = port_h.(M).VA("subtype")
+            leg0_h["Port"] = port_index
+            leg0_h["DevId"] = dev_id
+            if dev.Evs("locChassisSysName") {
+              leg0_h["ChassisSysName"] = dev.Vs("locChassisSysName")
+            }
+
+            if port_h.(M).Evs("ifName") {
+              leg0_h["ifName"] = port_h.(M).Vs("ifName")
+            }
+
+            leg1_h := norm_link_h.MkM("1")
+            leg1_h["ChassisId"] = rcid
+            leg1_h["ChassisIdSubtype"] = nei_h.(M).VA("RemChassisIdSubtype")
+            leg1_h["PortId"] = rport_id
+            leg1_h["PortIdSubtype"] = nei_h.(M).VA("RemPortIdSubtype")
+            leg1_h["ChassisSysName"] = nei_h.(M).VA("RemSysName")
+
+            nei_dev_id, nei_port_index, nei_ifname, nei_error := leg_nei(norm_link_h["1"])
+            if nei_error != legNeiErrNoDev {
+              leg1_h["DevId"] = nei_dev_id
+              leg1_h["Port"] = nei_port_index
+              if nei_error != legNeiErrNoIfName {
+                leg1_h["ifName"] = nei_ifname
+                if port_h.(M).Evs("ifName") {
+                  norm_link_h["_complete"] = int64(1)
+                  check_links = append(check_links, norm_link_id)
+                }
+              }
+            }
+
+            if norm_link_id != alt_link_id && norm_link_h["_complete"] != 1 {
+              alt_link_h := norm_link_h.Copy()
+              alt_link_h["_alt"] = int64(1)
+              alt_link_h["_alt_link_id"] = norm_link_id
+              data.VM("l2_links")[alt_link_id] = alt_link_h
+            }
+          }
         }
       }
     }
+  }
+
+  for _, link_id := range check_links {
+    link_h := data.VM("l2_links", link_id)
+    
   }
 
   if !devs.EvM(dev_id) {
