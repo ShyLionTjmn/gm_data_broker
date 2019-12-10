@@ -50,7 +50,7 @@ var data = make(M)
 var data["l2_links"] = make(M) // exported map with actual links. Keep link with down (2) state if both devices in db and no neighbours and any of it is down or interface is down
 var data["l3_links"] = make(M)
 var data["dev_list"] = make(M)
-var l2Links = make(M) // working map with alternatives
+var l2Matrix = make(M) // working map with alternatives
 
 
 var red_state_mutex = &sync.Mutex{}
@@ -207,7 +207,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   }
 
   // process links
-  check_links := make(M)
+  check_matrix := make(M)
 
   if dev.EvM("lldp_ports") && dev.Evs("locChassisId") {
     for port_index, port_h := range dev.VM("lldp_ports") {
@@ -215,62 +215,63 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
         for seq, nei_h := range port_h.(M).VM("neighbours") {
           rcid := nei_h.(M).Vs("RemChassisId")
           rport_id := nei_h.(M).Vs("RemPortId")
-          norm_link_id := l2l_key(dev.Vs("locChassisId"), port_h.(M).Vs("port_id"), rcid, rport_id)
-          alt_link_id := norm_link_id //SNR bug, when port id is ifName in PDU, but ifIndex in locPortID
+          norm_matrix_id := l2l_key(dev.Vs("locChassisId"), port_h.(M).Vs("port_id"), rcid, rport_id)
+          alt_matrix_id := norm_matrix_id //SNR bug, when port id is ifName in PDU, but ifIndex in locPortID
           if port_h.(M).Evs("ifName") {
-            alt_link_id = l2l_key(dev.Vs("locChassisId"), port_h.(M).Vs("ifName"), rcid, rport_id)
+            alt_matrix_id = l2l_key(dev.Vs("locChassisId"), port_h.(M).Vs("ifName"), rcid, rport_id)
           }
 
-          link_id := norm_link_id
+          matrix_id := norm_matrix_id
 
-          if !l2Links.EvM(link_id) && l2Links.EvM(alt_link_id) {
-            link_id = alt_link_id
+          if !l2Matrix.EvM(matrix_id) && l2Matrix.EvM(alt_matrix_id) {
+            matrix_id = alt_matrix_id
           }
 
-          if l2Links.EvM(link_id) {
-            link_h := l2Links.VM(link_id)
-            if link_h.Vs("_creator") == dev_id {
-              if link_h.Vi("_complete") == 1 {
-                link_h["_time"] = last_seen
-                check_links[link_id] = dev_id
+          if l2Matrix.EvM(matrix_id) {
+            matrix_h := l2Matrix.VM(matrix_id)
+            if matrix_h.Vs("_creator") == dev_id {
+              if matrix_h.Vi("_complete") == 1 {
+                matrix_h["_time"] = last_seen
+                check_matrix[matrix_id] = dev_id
               }
               continue
             }
-            if link_h.Vi("_complete") == 1 {
+            if matrix_h.Vi("_complete") == 1 {
               continue
             }
-            leg1_h := link_h.VM("1")
+            leg1_h := matrix_h.VM("1")
             leg1_h["PortIndex"] = port_index
             leg1_h["DevId"] = dev_id
 
-            link_h["_real_id"]=l2l_key(link_h.VM("0")["DevId"], link_h.VM("0")["PortIndex"], link_h.VM("1")["DevId"], link_h.VM("1")["PortIndex"])
+            matrix_h["link_id"]=l2l_key(matrix_h.VM("0")["DevId"], matrix_h.VM("0")["PortIndex"], matrix_h.VM("1")["DevId"], matrix_h.VM("1")["PortIndex"])
 
             if port_h.(M).Evs("ifName") {
               leg1_h["ifName"] = port_h.(M).Vs("ifName")
-              if link_h.Evs("0", "ifName") {
-                rifname := link_h.Vs("0", "ifName")
-                rdevid := link_h.Vs("0", "DevId")
+              if matrix_h.Evs("0", "ifName") {
+                rifname := matrix_h.Vs("0", "ifName")
+                rdevid := matrix_h.Vs("0", "DevId")
 
                 if devs.EvM(rdevid, "interfaces", rifname) &&
-                   link_h.Vi("_time") == devs.Vi(rdevid, "last_seen") {
+                   matrix_h.Vi("_time") == devs.Vi(rdevid, "last_seen") {
                   // if
-                  link_h["_complete"] = int64(1)
-                  check_links[link_id] = rdevid
+                  matrix_h["_complete"] = int64(1)
+                  check_matrix[matrix_id] = rdevid
                 }
               }
             }
 
 
           } else {
-            norm_link_h := l2Links.MkM(norm_link_id)
+            norm_matrix_h := l2Matrix.MkM(norm_matrix_id)
 
-            norm_link_h["_creator"] = dev_id
-            norm_link_h["_complete"] = int64(0)
-            norm_link_h["_alt"] = int64(0)
-            norm_link_h["_alt_link_id"] = alt_link_id
-            norm_link_h["_time"] = last_seen
+            norm_matrix_h["_creator"] = dev_id
+            norm_matrix_h["_complete"] = int64(0)
+            norm_matrix_h["_alt"] = int64(0)
+            norm_matrix_h["matrix_id"] = norm_matrix_id
+            norm_matrix_h["_alt_matrix_id"] = alt_matrix_id
+            norm_matrix_h["_time"] = last_seen
 
-            leg0_h := norm_link_h.MkM("0")
+            leg0_h := norm_matrix_h.MkM("0")
             leg0_h["ChassisId"] = dev.Vs("locChassisId")
             leg0_h["ChassisIdSubtype"] = dev.VA("locChassisIdSubtype")
             leg0_h["PortId"] = port_h.(M).Vs("port_id")
@@ -285,32 +286,33 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
               leg0_h["ifName"] = port_h.(M).Vs("ifName")
             }
 
-            leg1_h := norm_link_h.MkM("1")
+            leg1_h := norm_matrix_h.MkM("1")
             leg1_h["ChassisId"] = rcid
             leg1_h["ChassisIdSubtype"] = nei_h.(M).VA("RemChassisIdSubtype")
             leg1_h["PortId"] = rport_id
             leg1_h["PortIdSubtype"] = nei_h.(M).VA("RemPortIdSubtype")
             leg1_h["ChassisSysName"] = nei_h.(M).VA("RemSysName")
 
-            nei_dev_id, nei_port_index, nei_ifname, nei_error := leg_nei(norm_link_h["1"])
+            nei_dev_id, nei_port_index, nei_ifname, nei_error := leg_nei(norm_matrix_h["1"])
             if nei_error != legNeiErrNoDev {
               leg1_h["DevId"] = nei_dev_id
               leg1_h["PortIndex"] = nei_port_index
-              norm_link_h["_real_id"]=l2l_key(link_h.VM("0")["DevId"], link_h.VM("0")["PortIndex"], link_h.VM("1")["DevId"], link_h.VM("1")["PortIndex"])
+              norm_matrix_h["link_id"]=l2l_key(matrix_h.VM("0")["DevId"], matrix_h.VM("0")["PortIndex"], matrix_h.VM("1")["DevId"], matrix_h.VM("1")["PortIndex"])
               if nei_error != legNeiErrNoIfName {
                 leg1_h["ifName"] = nei_ifname
                 if port_h.(M).Evs("ifName") {
-                  norm_link_h["_complete"] = int64(1)
-                  check_links[norm_link_id] = dev_id
+                  norm_matrix_h["_complete"] = int64(1)
+                  check_matrix[norm_matrix_id] = dev_id
                 }
               }
             }
 
-            if norm_link_id != alt_link_id && norm_link_h["_complete"] != 1 {
-              alt_link_h := norm_link_h.Copy()
-              alt_link_h["_alt"] = int64(1)
-              alt_link_h["_alt_link_id"] = norm_link_id
-              l2Links[alt_link_id] = alt_link_h
+            if norm_matrix_id != alt_matrix_id && norm_matrix_h["_complete"] != 1 {
+              alt_matrix_h := norm_matrix_h.Copy()
+              alt_matrix_h["_alt"] = int64(1)
+              alt_matrix_h["_alt_matrix_id"] = norm_matrix_id
+              alt_matrix_h["matrix_id"] = alt_matrix_id
+              l2Matrix[alt_matrix_id] = alt_matrix_h
             }
           }
         }
@@ -318,6 +320,69 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     }
   }
 
+  if !startup && devs.EvM(dev_id, "interfaces") {
+    //copy links from previous run
+    for ifName, if_h := range devs.VM(dev_id, "interfaces") {
+      if if_h.(M).EvA("l2_links") && dev.EvM("interfaces", ifName) {
+        link_list := make([]string, 0)
+        for _, link_id := range if_h.(M).VA("l2_links").([]string) {
+          if data.EvM("l2_links", link_id) {
+
+            link_h := data.VM("l2_links", link_id)
+            matrix_id := link_h.Vs("matrix_id")
+            if l2Matrix.EvM(matrix_id) {
+              matrix_h := l2Matrix.VM(matrix_id)
+              creator := matrix_h.Vs("_creator")
+              l0_ifName := matrix_h.Vs("0", "ifName")
+              l1_ifName := matrix_h.Vs("1", "ifName")
+              l1_devId := matrix_h.Vs("1", "DevId")
+              if (creator == dev_id && devs.EvA(l1_devId, "interfaces", l1_ifName, "l2_links") ||
+                 (creator != dev_id && devs.EvA(creator, "interfaces", l0_ifName, "l2_links") {
+                keep_link := false
+                if (creator == dev_id && matrix_h.Vi("_time") == last_seen && check_matrix.Evs(matrix_id)) ||
+                   (creator != dev_id && matrix_h.Vi("_time") == devs.Vi(creator, "last_seen") ||
+                   false {
+                  //if
+                  keep_link = true
+                  link_h["status"] = int64(1)
+                } else if (creator == dev_id &&
+                           len(if_h.(M).VA("l2_links").([]string)) == 1 &&
+                           len(devs.VA(l1_devId, "interfaces", l1_ifName, "l2_links").([]string)) == 1 &&
+                           (dev.Vs("overall_status") != "ok" ||
+                            dev.Vi("interfaces", l0_ifName, "ifOperStatus") == 2 ||
+                            devs.Vs(l1_devId, "overall_status") != "ok" ||
+                            devs.Vs(l1_devId, "interfaces", l1_ifName, "ifOperStatus") == 2 ||
+                            false
+                           )
+                          ) ||
+                          (creator != dev_id &&
+                           len(if_h.(M).VA("l2_links").([]string)) == 1 &&
+                           len(devs.VA(creator, "interfaces", l0_ifName, "l2_links").([]string)) == 1 &&
+                           (dev.Vs("overall_status") != "ok" ||
+                            dev.Vi("interfaces", l0_ifName, "ifOperStatus") == 2 ||
+                            devs.Vs(creator, "overall_status") != "ok" ||
+                            devs.Vs(creator, "interfaces", l0_ifName, "ifOperStatus") == 2 ||
+                            false
+                           )
+                          ) ||
+                          false {
+                  //else if
+                  keep_link = true
+                  link_h["status"] = int64(2)
+                }
+
+                if keep_link {
+                  link_list = append(link_list, link_id)
+                }
+              }
+            }
+          }
+        }
+
+        if_h.(M)["l2_links"] = link_list
+      }
+    }
+  }
   //cleanup outdated links
 
   del_list := make([]string, 0)
@@ -326,11 +391,12 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     if if_h.(M).EvA("l2_links") {
       link_list := make([]string, 0)
       for _, link_id := range if_h.(M).VA("l2_links").([]string) {
-        if l2Links.EvM(link_id) {
+        if data.EvM("l2_links", link_id) {
 
-          link_h := l2Links.VM(link_id)
+          link_h := data.VM("l2_links", link_id)
           creator := link_h.Vs("_creator")
-          if (creator == dev_id && link_h.Vi("_time") == last_seen && check_links.Evs(link_id)) ||
+          matrix_id := link_h.Vs("matrix_id")
+          if (creator == dev_id && link_h.Vi("_time") == last_seen && check_matrix.Evs(link_id)) ||
              (creator != dev_id && devs.EvM(creator) && link_h.Vi("_time") == devs.Vi(creator, "last_seen") ||
              false {
             //if
@@ -345,7 +411,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   }
 
   for _, link_id := range del_list {
-    link_h := l2Links.VM(link_id)
+    link_h := l2Matrix.VM(link_id)
     var if_h M
     if link_h.EvM("0", "DevId") && link_h.Vs("0", "DevId") != dev_id {
       rdevid := link_h.Vs("0", "DevId")
@@ -375,15 +441,15 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
         }
       }
     }
-    delete(l2Links, link_id)
+    delete(l2Matrix, link_id)
   }
 
-  for link_id, _ := range check_links {
+  for link_id, _ := range check_matrix {
     var if0_h M
     var if1_h M
-    link_h := l2Links.VM(link_id)
+    link_h := l2Matrix.VM(link_id)
 
-    if check_links.Vs(link_id) == dev_id {
+    if check_matrix.Vs(link_id) == dev_id {
       if0_h = dev.VM("interfaces", link_h.Vs("0", "ifName"))
       if1_h = devs.VM(link_h.Vs("1", "DevId"), "interfaces", link_h.Vs("1", "ifName"))
     } else {
