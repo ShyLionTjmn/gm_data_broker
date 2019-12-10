@@ -47,9 +47,10 @@ var globalMutex = &sync.RWMutex{}
 //locks this maps:
 var devs = make(M)
 var data = make(M)
-var data["l2_links"] = make(M)
+var data["l2_links"] = make(M) // exported map with actual links. Keep link with down (2) state if both devices in db and no neighbours and any of it is down or interface is down
 var data["l3_links"] = make(M)
 var data["dev_list"] = make(M)
+var l2Links = make(M) // working map with alternatives
 
 
 var red_state_mutex = &sync.Mutex{}
@@ -74,7 +75,7 @@ func redState(ok bool) {
   }
 }
 
-func process_ip_data(wg *sync.WaitGroup, ip string) {
+func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   if wg != nil {
     defer wg.Done()
   }
@@ -102,6 +103,10 @@ func process_ip_data(wg *sync.WaitGroup, ip string) {
     if err == redis.ErrNil {
       //device removed from dev_list, just ignore it
       err = nil
+
+      if !startup {
+        //we should clean data
+      }
     }
     return
   }
@@ -201,7 +206,8 @@ func process_ip_data(wg *sync.WaitGroup, ip string) {
     }
   }
 
-  check_links := make([]string, 0)
+  // process links
+  check_links := make(M)
 
   if dev.EvM("lldp_ports") && dev.Evs("locChassisId") {
     for port_index, port_h := range dev.VM("lldp_ports") {
@@ -217,21 +223,27 @@ func process_ip_data(wg *sync.WaitGroup, ip string) {
 
           link_id := norm_link_id
 
-          if !data.EvM("l2_links", link_id) && data.EvM("l2_links", alt_link_id) {
+          if !l2Links.EvM(link_id) && l2Links.EvM(alt_link_id) {
             link_id = alt_link_id
           }
 
-          if data.EvM("l2_links", link_id) {
-            link_h := data.VM("l2_links", link_id)
-            if link_h.Vs("_creator") == dev.Vs("locChassisId") {
+          if l2Links.EvM(link_id) {
+            link_h := l2Links.VM(link_id)
+            if link_h.Vs("_creator") == dev_id {
+              if link_h.Vi("_complete") == 1 {
+                link_h["_time"] = last_seen
+                check_links[link_id] = dev_id
+              }
               continue
             }
             if link_h.Vi("_complete") == 1 {
               continue
             }
             leg1_h := link_h.VM("1")
-            leg1_h["Port"] = port_index
+            leg1_h["PortIndex"] = port_index
             leg1_h["DevId"] = dev_id
+
+            link_h["_real_id"]=l2l_key(link_h.VM("0")["DevId"], link_h.VM("0")["PortIndex"], link_h.VM("1")["DevId"], link_h.VM("1")["PortIndex"])
 
             if port_h.(M).Evs("ifName") {
               leg1_h["ifName"] = port_h.(M).Vs("ifName")
@@ -239,28 +251,31 @@ func process_ip_data(wg *sync.WaitGroup, ip string) {
                 rifname := link_h.Vs("0", "ifName")
                 rdevid := link_h.Vs("0", "DevId")
 
-                if devs.EvM(rdevid, "interfaces", rifname) {
+                if devs.EvM(rdevid, "interfaces", rifname) &&
+                   link_h.Vi("_time") == devs.Vi(rdevid, "last_seen") {
+                  // if
                   link_h["_complete"] = int64(1)
-                  check_links = append(check_links, link_id)
+                  check_links[link_id] = rdevid
                 }
               }
             }
 
 
           } else {
-            norm_link_h := data.MkM("l2_links", norm_link_id)
+            norm_link_h := l2Links.MkM(norm_link_id)
 
-            norm_link_h["_creator"] = dev.Vs("locChassisId")
+            norm_link_h["_creator"] = dev_id
             norm_link_h["_complete"] = int64(0)
             norm_link_h["_alt"] = int64(0)
             norm_link_h["_alt_link_id"] = alt_link_id
+            norm_link_h["_time"] = last_seen
 
             leg0_h := norm_link_h.MkM("0")
             leg0_h["ChassisId"] = dev.Vs("locChassisId")
             leg0_h["ChassisIdSubtype"] = dev.VA("locChassisIdSubtype")
             leg0_h["PortId"] = port_h.(M).Vs("port_id")
             leg0_h["PortIdSubtype"] = port_h.(M).VA("subtype")
-            leg0_h["Port"] = port_index
+            leg0_h["PortIndex"] = port_index
             leg0_h["DevId"] = dev_id
             if dev.Evs("locChassisSysName") {
               leg0_h["ChassisSysName"] = dev.Vs("locChassisSysName")
@@ -280,12 +295,13 @@ func process_ip_data(wg *sync.WaitGroup, ip string) {
             nei_dev_id, nei_port_index, nei_ifname, nei_error := leg_nei(norm_link_h["1"])
             if nei_error != legNeiErrNoDev {
               leg1_h["DevId"] = nei_dev_id
-              leg1_h["Port"] = nei_port_index
+              leg1_h["PortIndex"] = nei_port_index
+              norm_link_h["_real_id"]=l2l_key(link_h.VM("0")["DevId"], link_h.VM("0")["PortIndex"], link_h.VM("1")["DevId"], link_h.VM("1")["PortIndex"])
               if nei_error != legNeiErrNoIfName {
                 leg1_h["ifName"] = nei_ifname
                 if port_h.(M).Evs("ifName") {
                   norm_link_h["_complete"] = int64(1)
-                  check_links = append(check_links, norm_link_id)
+                  check_links[norm_link_id] = dev_id
                 }
               }
             }
@@ -294,7 +310,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string) {
               alt_link_h := norm_link_h.Copy()
               alt_link_h["_alt"] = int64(1)
               alt_link_h["_alt_link_id"] = norm_link_id
-              data.VM("l2_links")[alt_link_id] = alt_link_h
+              l2Links[alt_link_id] = alt_link_h
             }
           }
         }
@@ -302,9 +318,112 @@ func process_ip_data(wg *sync.WaitGroup, ip string) {
     }
   }
 
-  for _, link_id := range check_links {
-    link_h := data.VM("l2_links", link_id)
-    
+  //cleanup outdated links
+
+  del_list := make([]string, 0)
+
+  for ifName, if_h := range dev.VM("interfaces") {
+    if if_h.(M).EvA("l2_links") {
+      link_list := make([]string, 0)
+      for _, link_id := range if_h.(M).VA("l2_links").([]string) {
+        if l2Links.EvM(link_id) {
+
+          link_h := l2Links.VM(link_id)
+          creator := link_h.Vs("_creator")
+          if (creator == dev_id && link_h.Vi("_time") == last_seen && check_links.Evs(link_id)) ||
+             (creator != dev_id && devs.EvM(creator) && link_h.Vi("_time") == devs.Vi(creator, "last_seen") ||
+             false {
+            //if
+            link_list = append(link_list, link_id)
+          } else {
+            del_list = append(del_list, link_id)
+          }
+        }
+      }
+      if_h.(M)["l2_links"] = link_list
+    }
+  }
+
+  for _, link_id := range del_list {
+    link_h := l2Links.VM(link_id)
+    var if_h M
+    if link_h.EvM("0", "DevId") && link_h.Vs("0", "DevId") != dev_id {
+      rdevid := link_h.Vs("0", "DevId")
+      rifname := link_h.Vs("0", "ifName")
+      if devs.EvM(rdevidm "interfaces", rifname) {
+        if_h = devs.VM(rdevidm "interfaces", rifname)
+      }
+    } else if link_h.EvM("1", "DevId") && link_h.Vs("1", "DevId") != dev_id {
+      rdevid := link_h.Vs("1", "DevId")
+      rifname := link_h.Vs("1", "ifName")
+      if devs.EvM(rdevidm "interfaces", rifname) {
+        if_h = devs.VM(rdevidm "interfaces", rifname)
+      }
+    }
+    if if_h != nil {
+      if if_h.EvA("l2_links") {
+        link_list := make([]string, 0)
+        for _, _id := range if_h.VA("l2_links").([]string) {
+          if id != link_id {
+            link_list = append(link_list, _id)
+          }
+        }
+        if len(link_list) > 0 {
+          if_h["l2_links"] = link_list
+        } else {
+          delete(if_h, "l2_links")
+        }
+      }
+    }
+    delete(l2Links, link_id)
+  }
+
+  for link_id, _ := range check_links {
+    var if0_h M
+    var if1_h M
+    link_h := l2Links.VM(link_id)
+
+    if check_links.Vs(link_id) == dev_id {
+      if0_h = dev.VM("interfaces", link_h.Vs("0", "ifName"))
+      if1_h = devs.VM(link_h.Vs("1", "DevId"), "interfaces", link_h.Vs("1", "ifName"))
+    } else {
+      if0_h = devs.VM(link_h.Vs("0", "DevId"), "interfaces", link_h.Vs("0", "ifName"))
+      if1_h = dev.VM("interfaces", link_h.Vs("1", "ifName"))
+    }
+
+    if !if0_h.EvA("l2_links") {
+      if0_h["l2_links"] = make([]string, 1)
+    }
+
+    found := false
+
+    for _, _id := range if0_h["l2_links"].([]string) {
+      if id == link_id {
+        found = true
+        break
+      }
+    }
+
+    if !found {
+      if0_h["l2_links"] = append(if0_h["l2_links"].([]string), link_id)
+    }
+
+    if !if1_h.EvA("l2_links") {
+      if1_h["l2_links"] = make([]string, 1)
+    }
+
+    found = false
+
+    for _, _id := range if1_h["l2_links"].([]string) {
+      if id == link_id {
+        found = true
+        break
+      }
+    }
+
+    if !found {
+      if1_h["l2_links"] = append(if1_h["l2_links"].([]string), link_id)
+    }
   }
 
   if !devs.EvM(dev_id) {
@@ -346,7 +465,7 @@ L66:  for !stop_signalled {
           a := strings.Split(reply, ":")
           if len(a) == 2 && a[0] == "0" && ip_reg.MatchString(a[1]) {
             wg.Add(1)
-            go process_ip_data(wg, a[1])
+            go process_ip_data(wg, a[1], false)
           }
           fmt.Println(time.Now().Format("15:04:05"), reply)
         }
@@ -513,9 +632,9 @@ MAIN_LOOP:
             //fmt.Println("Load IP", ip)
             if max_open_files > total_ips+20 {
               wg_.Add(1)
-              go process_ip_data(&wg_, ip)
+              go process_ip_data(&wg_, ip, true)
             } else {
-              process_ip_data(nil, ip)
+              process_ip_data(nil, ip, true)
             }
           }
         }
