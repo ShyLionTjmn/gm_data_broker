@@ -47,10 +47,17 @@ var globalMutex = &sync.RWMutex{}
 //locks this maps:
 var devs = make(M)
 var data = make(M)
-var data["l2_links"] = make(M) // exported map with actual links. Keep link with down (2) state if both devices in db and no neighbours and any of it is down or interface is down
-var data["l3_links"] = make(M)
-var data["dev_list"] = make(M)
 var l2Matrix = make(M) // working map with alternatives
+
+func init() {
+  data["l2_links"] = make(M) // exported map with actual links. Keep link with down (2) state if both devices in db and no neighbours and any of it is down or interface is down
+  data["l3_links"] = make(M)
+  data["dev_list"] = make(M)
+}
+
+var legNeiErrNoDev = errors.New("nd")
+var legNeiErrNoIfName = errors.New("nin")
+var legNeiErrNoPi = errors.New("npi")
 
 
 var red_state_mutex = &sync.Mutex{}
@@ -72,6 +79,51 @@ func redState(ok bool) {
       red_bad = time.Now().Unix()
       fmt.Fprintln(os.Stderr, "redis is down")
     }
+  }
+}
+
+func leg_nei(leg M) (dev_id string, port_index string, if_name string, err error) {
+  chid := leg.Vs("ChassisId")
+  chidst := leg.Vi("ChassisIdSubtype")
+  pid := leg.Vs("PortId")
+  pidst := leg.Vi("PortIdSubtype")
+
+  dev_id = "lldp:"+strings.ToLower(chid)
+  dev_h := devs.VM(dev_id)
+
+  if dev_h == nil {
+    err = legNeiErrNoDev
+  } else if dev_h.Evi("locChassisIdSubtype") && dev_h.Vi("locChassisIdSubtype") == chidst &&
+     dev_h.Evs("lldp_id2port_index", pid) &&
+     dev_h.Vi("lldp_ports", dev_h.Vs("lldp_id2port_index", pid), "subtype") == pidst &&
+     pidst == 7 {
+    //if
+    port_index = dev_h.Vs("lldp_id2port_index", pid)
+    if !dev_h.Evs("lldp_ports", port_index, "ifName") {
+      err = legNeiErrNoIfName
+    } else {
+      if_name = dev_h.Vs("lldp_ports", port_index, "ifName")
+    }
+  } else if dev_h.Evi("locChassisIdSubtype") && dev_h.Vi("locChassisIdSubtype") == chidst &&
+            pidst == 5 && dev_h.Evs("interfaces", pid, "portIndex") {
+    //else if
+    port_index = dev_h.Vs("interfaces", pid, "portIndex")
+    if_name = pid
+  } else {
+    err = legNeiErrNoPi
+  }
+  return
+}
+
+func l2l_key(cid1, pid1, cid2, pid2 string) string {
+  cid1_gt := cid1 > cid2
+  cid_eq := cid1 == cid2
+  pid1_gt := pid1 > pid2
+
+  if cid1_gt || (cid_eq && pid1_gt) {
+    return cid1+"@"+pid1+"#"+cid2+"@"+pid2
+  } else {
+    return cid2+"@"+pid2+"#"+cid1+"@"+pid1
   }
 }
 
@@ -212,7 +264,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   if dev.EvM("lldp_ports") && dev.Evs("locChassisId") {
     for port_index, port_h := range dev.VM("lldp_ports") {
       if port_h.(M).EvM("neighbours") {
-        for seq, nei_h := range port_h.(M).VM("neighbours") {
+        for _, nei_h := range port_h.(M).VM("neighbours") {
           rcid := nei_h.(M).Vs("RemChassisId")
           rport_id := nei_h.(M).Vs("RemPortId")
           norm_matrix_id := l2l_key(dev.Vs("locChassisId"), port_h.(M).Vs("port_id"), rcid, rport_id)
@@ -227,93 +279,97 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
             matrix_id = alt_matrix_id
           }
 
+          var matrix_h M
+
           if l2Matrix.EvM(matrix_id) {
-            matrix_h := l2Matrix.VM(matrix_id)
-            if matrix_h.Vs("_creator") == dev_id {
-              if matrix_h.Vi("_complete") == 1 {
-                matrix_h["_time"] = last_seen
-                check_matrix[matrix_id] = dev_id
-              }
-              continue
-            }
-            if matrix_h.Vi("_complete") == 1 {
-              continue
-            }
-            leg1_h := matrix_h.VM("1")
-            leg1_h["PortIndex"] = port_index
-            leg1_h["DevId"] = dev_id
+            matrix_h = l2Matrix.VM(matrix_id)
+            if matrix_h.Vs("_creator") != dev_id {
 
-            matrix_h["link_id"]=l2l_key(matrix_h.VM("0")["DevId"], matrix_h.VM("0")["PortIndex"], matrix_h.VM("1")["DevId"], matrix_h.VM("1")["PortIndex"])
+              //reset its status
+              matrix_h["status"] = int64(2)
+              matrix_h["_complete"] = int64(0)
 
-            if port_h.(M).Evs("ifName") {
-              leg1_h["ifName"] = port_h.(M).Vs("ifName")
-              if matrix_h.Evs("0", "ifName") {
-                rifname := matrix_h.Vs("0", "ifName")
-                rdevid := matrix_h.Vs("0", "DevId")
+              // we did not create it
+              leg1_h := matrix_h.VM("1")
+              leg1_h["PortIndex"] = port_index
+              leg1_h["DevId"] = dev_id
 
-                if devs.EvM(rdevid, "interfaces", rifname) &&
-                   matrix_h.Vi("_time") == devs.Vi(rdevid, "last_seen") {
-                  // if
-                  matrix_h["_complete"] = int64(1)
-                  check_matrix[matrix_id] = rdevid
+              matrix_h["link_id"]=l2l_key(matrix_h.Vs("0", "DevId"), matrix_h.Vs("0", "PortIndex"), matrix_h.Vs("1", "DevId"), matrix_h.Vs("1", "PortIndex"))
+
+              if port_h.(M).Evs("ifName") {
+                leg1_h["ifName"] = port_h.(M).Vs("ifName")
+                if matrix_h.Evs("0", "ifName") {
+                  rifname := matrix_h.Vs("0", "ifName")
+                  rdevid := matrix_h.Vs("0", "DevId")
+
+                  if devs.EvM(rdevid, "interfaces", rifname) &&
+                     matrix_h.Vi("_time") == devs.Vi(rdevid, "last_seen") {
+                    // if
+                    matrix_h["_complete"] = int64(1)
+                    matrix_h["status"] = int64(1)
+                    check_matrix[matrix_id] = rdevid
+                  }
                 }
               }
-            }
 
+            }
 
           } else {
-            norm_matrix_h := l2Matrix.MkM(norm_matrix_id)
+            matrix_h = l2Matrix.MkM(norm_matrix_id)
+          }
 
-            norm_matrix_h["_creator"] = dev_id
-            norm_matrix_h["_complete"] = int64(0)
-            norm_matrix_h["_alt"] = int64(0)
-            norm_matrix_h["matrix_id"] = norm_matrix_id
-            norm_matrix_h["_alt_matrix_id"] = alt_matrix_id
-            norm_matrix_h["_time"] = last_seen
+          matrix_h["_creator"] = dev_id
+          matrix_h["_complete"] = int64(0)
+          matrix_h["_alt"] = int64(0)
+          matrix_h["status"] = int64(2)
+          matrix_h["matrix_id"] = norm_matrix_id
+          matrix_h["_alt_matrix_id"] = alt_matrix_id
+          matrix_h["_time"] = last_seen
 
-            leg0_h := norm_matrix_h.MkM("0")
-            leg0_h["ChassisId"] = dev.Vs("locChassisId")
-            leg0_h["ChassisIdSubtype"] = dev.VA("locChassisIdSubtype")
-            leg0_h["PortId"] = port_h.(M).Vs("port_id")
-            leg0_h["PortIdSubtype"] = port_h.(M).VA("subtype")
-            leg0_h["PortIndex"] = port_index
-            leg0_h["DevId"] = dev_id
-            if dev.Evs("locChassisSysName") {
-              leg0_h["ChassisSysName"] = dev.Vs("locChassisSysName")
-            }
+          leg0_h := matrix_h.MkM("0")
+          leg0_h["ChassisId"] = dev.Vs("locChassisId")
+          leg0_h["ChassisIdSubtype"] = dev.VA("locChassisIdSubtype")
+          leg0_h["PortId"] = port_h.(M).Vs("port_id")
+          leg0_h["PortIdSubtype"] = port_h.(M).VA("subtype")
+          leg0_h["PortIndex"] = port_index
+          leg0_h["DevId"] = dev_id
+          if dev.Evs("locChassisSysName") {
+            leg0_h["ChassisSysName"] = dev.Vs("locChassisSysName")
+          }
 
-            if port_h.(M).Evs("ifName") {
-              leg0_h["ifName"] = port_h.(M).Vs("ifName")
-            }
+          if port_h.(M).Evs("ifName") {
+            leg0_h["ifName"] = port_h.(M).Vs("ifName")
+          }
 
-            leg1_h := norm_matrix_h.MkM("1")
-            leg1_h["ChassisId"] = rcid
-            leg1_h["ChassisIdSubtype"] = nei_h.(M).VA("RemChassisIdSubtype")
-            leg1_h["PortId"] = rport_id
-            leg1_h["PortIdSubtype"] = nei_h.(M).VA("RemPortIdSubtype")
-            leg1_h["ChassisSysName"] = nei_h.(M).VA("RemSysName")
+          leg1_h := matrix_h.MkM("1")
+          leg1_h["ChassisId"] = rcid
+          leg1_h["ChassisIdSubtype"] = nei_h.(M).VA("RemChassisIdSubtype")
+          leg1_h["PortId"] = rport_id
+          leg1_h["PortIdSubtype"] = nei_h.(M).VA("RemPortIdSubtype")
+          leg1_h["ChassisSysName"] = nei_h.(M).VA("RemSysName")
 
-            nei_dev_id, nei_port_index, nei_ifname, nei_error := leg_nei(norm_matrix_h["1"])
-            if nei_error != legNeiErrNoDev {
-              leg1_h["DevId"] = nei_dev_id
-              leg1_h["PortIndex"] = nei_port_index
-              norm_matrix_h["link_id"]=l2l_key(matrix_h.VM("0")["DevId"], matrix_h.VM("0")["PortIndex"], matrix_h.VM("1")["DevId"], matrix_h.VM("1")["PortIndex"])
-              if nei_error != legNeiErrNoIfName {
-                leg1_h["ifName"] = nei_ifname
-                if port_h.(M).Evs("ifName") {
-                  norm_matrix_h["_complete"] = int64(1)
-                  check_matrix[norm_matrix_id] = dev_id
-                }
+          nei_dev_id, nei_port_index, nei_ifname, nei_error := leg_nei(leg1_h)
+
+          if nei_error != legNeiErrNoDev && nei_error != legNeiErrNoPi {
+            leg1_h["DevId"] = nei_dev_id
+            leg1_h["PortIndex"] = nei_port_index
+            matrix_h["link_id"]=l2l_key(matrix_h.Vs("0", "DevId"), matrix_h.Vs("0", "PortIndex"), matrix_h.Vs("1", "DevId"), matrix_h.Vs("1", "PortIndex"))
+            if nei_error != legNeiErrNoIfName {
+              leg1_h["ifName"] = nei_ifname
+              if port_h.(M).Evs("ifName") {
+                matrix_h["status"] = int64(1)
+                matrix_h["_complete"] = int64(1)
+                check_matrix[norm_matrix_id] = dev_id
               }
             }
+          }
 
-            if norm_matrix_id != alt_matrix_id && norm_matrix_h["_complete"] != 1 {
-              alt_matrix_h := norm_matrix_h.Copy()
-              alt_matrix_h["_alt"] = int64(1)
-              alt_matrix_h["_alt_matrix_id"] = norm_matrix_id
-              alt_matrix_h["matrix_id"] = alt_matrix_id
-              l2Matrix[alt_matrix_id] = alt_matrix_h
-            }
+          if norm_matrix_id != alt_matrix_id && matrix_h["_complete"] != 1 {
+            alt_matrix_h := matrix_h.Copy()
+            alt_matrix_h["_alt"] = int64(1)
+            alt_matrix_h["_alt_matrix_id"] = norm_matrix_id
+            alt_matrix_h["matrix_id"] = alt_matrix_id
+            l2Matrix[alt_matrix_id] = alt_matrix_h
           }
         }
       }
@@ -337,10 +393,11 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
               l0_ifName := matrix_h.Vs("0", "ifName")
               l1_ifName := matrix_h.Vs("1", "ifName")
               l1_devId := matrix_h.Vs("1", "DevId")
-              if (creator == dev_id && devs.EvA(l1_devId, "interfaces", l1_ifName, "l2_links") ||
-                 (creator != dev_id && devs.EvA(creator, "interfaces", l0_ifName, "l2_links") {
+              if (creator == dev_id && devs.EvA(l1_devId, "interfaces", l1_ifName, "l2_links")) ||
+                 (creator != dev_id && devs.EvA(creator, "interfaces", l0_ifName, "l2_links")) {
+                //if
                 if (creator == dev_id && matrix_h.Vi("_time") == last_seen && check_matrix.Evs(matrix_id)) ||
-                   (creator != dev_id && matrix_h.Vi("_time") == devs.Vi(creator, "last_seen") ||
+                   (creator != dev_id && matrix_h.Vi("_time") == devs.Vi(creator, "last_seen")) ||
                    false {
                   //if
                   keep_link = true
@@ -352,20 +409,16 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
                            (dev.Vs("overall_status") != "ok" ||
                             dev.Vi("interfaces", l0_ifName, "ifOperStatus") == 2 ||
                             devs.Vs(l1_devId, "overall_status") != "ok" ||
-                            devs.Vs(l1_devId, "interfaces", l1_ifName, "ifOperStatus") == 2 ||
-                            false
-                           )
-                          ) ||
+                            devs.Vi(l1_devId, "interfaces", l1_ifName, "ifOperStatus") == 2 ||
+                            false)) ||
                           (creator != dev_id &&
                            len(if_h.(M).VA("l2_links").([]string)) == 1 &&
                            len(devs.VA(creator, "interfaces", l0_ifName, "l2_links").([]string)) == 1 &&
                            (dev.Vs("overall_status") != "ok" ||
                             dev.Vi("interfaces", l0_ifName, "ifOperStatus") == 2 ||
                             devs.Vs(creator, "overall_status") != "ok" ||
-                            devs.Vs(creator, "interfaces", l0_ifName, "ifOperStatus") == 2 ||
-                            false
-                           )
-                          ) ||
+                            devs.Vi(creator, "interfaces", l0_ifName, "ifOperStatus") == 2 ||
+                            false)) ||
                           false {
                   //else if
                   keep_link = true
@@ -388,7 +441,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
               if creator == dev_id && devs.EvA(l1_devId, "interfaces", l1_ifName, "l2_links") {
                 list := devs.VA(l1_devId, "interfaces", l1_ifName, "l2_links").([]string)
                 found := -1
-                for i := 0; i < len(old_list); i++ { if list[i] == link_id { found = i; break } }
+                for i := 0; i < len(list); i++ { if list[i] == link_id { found = i; break } }
                 if found >= 0 {
                   devs.VM(l1_devId, "interfaces", l1_ifName)["l2_links"] = append(list[:found], list[found+1:]...)
                 }
@@ -397,7 +450,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
               if creator != dev_id && devs.EvA(creator, "interfaces", l0_ifName, "l2_links") {
                 list := devs.VA(creator, "interfaces", l0_ifName, "l2_links").([]string)
                 found := -1
-                for i := 0; i < len(old_list); i++ { if list[i] == link_id { found = i; break } }
+                for i := 0; i < len(list); i++ { if list[i] == link_id { found = i; break } }
                 if found >= 0 {
                   devs.VM(creator, "interfaces", l0_ifName)["l2_links"] = append(list[:found], list[found+1:]...)
                 }
@@ -423,6 +476,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     var if0_h M
     var if1_h M
     matrix_h := l2Matrix.VM(matrix_id)
+    link_id := matrix_h.Vs("link_id")
 
     if check_matrix.Vs(matrix_id) == dev_id {
       if0_h = dev.VM("interfaces", matrix_h.Vs("0", "ifName"))
@@ -438,15 +492,15 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
     found := false
 
-    for _, _id := range if0_h["l2_links"].([]string) {
-      if id == matrix_id {
+    for _, l_id := range if0_h["l2_links"].([]string) {
+      if l_id == link_id {
         found = true
         break
       }
     }
 
     if !found {
-      if0_h["l2_links"] = append(if0_h["l2_links"].([]string), matrix_id)
+      if0_h["l2_links"] = append(if0_h["l2_links"].([]string), link_id)
     }
 
     if !if1_h.EvA("l2_links") {
@@ -455,15 +509,19 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
     found = false
 
-    for _, _id := range if1_h["l2_links"].([]string) {
-      if id == matrix_id {
+    for _, l_id := range if1_h["l2_links"].([]string) {
+      if l_id == link_id {
         found = true
         break
       }
     }
 
     if !found {
-      if1_h["l2_links"] = append(if1_h["l2_links"].([]string), matrix_id)
+      if1_h["l2_links"] = append(if1_h["l2_links"].([]string), link_id)
+    }
+
+    if !data.EvM("l2_links", link_id) {
+      data.VM("l2_links")[link_id] = l2Matrix.VM(matrix_id)
     }
   }
 
@@ -536,6 +594,25 @@ L66:  for !stop_signalled {
   }
 }
 
+func myHttpHandlerDebug(w http.ResponseWriter, req *http.Request) {
+  req.ParseForm()
+  globalMutex.RLock()
+  m := make(M)
+  m["data"] = data
+  m["l2Matrix"] = l2Matrix
+  j, err := json.MarshalIndent(m, "", "  ")
+  globalMutex.RUnlock()
+
+  if err != nil {
+    http.Error(w, err.Error(), http.StatusInternalServerError)
+    return
+  }
+
+  w.Header().Add("Content-Type", "text/javascript")
+  w.Write(j)
+}
+
+
 func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
   req.ParseForm()
   globalMutex.RLock()
@@ -574,6 +651,7 @@ func http_server(stop chan string, wg *sync.WaitGroup) {
   }()
 
   http.HandleFunc("/", myHttpHandlerRoot)
+  http.HandleFunc("/debug/", myHttpHandlerDebug)
 
   http_err := s.ListenAndServe()
   if http_err != http.ErrServerClosed {
