@@ -320,15 +320,16 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     }
   }
 
+  //copy links from previous run and cleanup outdated
   if !startup && devs.EvM(dev_id, "interfaces") {
-    //copy links from previous run
     for ifName, if_h := range devs.VM(dev_id, "interfaces") {
       if if_h.(M).EvA("l2_links") && dev.EvM("interfaces", ifName) {
         link_list := make([]string, 0)
         for _, link_id := range if_h.(M).VA("l2_links").([]string) {
-          if data.EvM("l2_links", link_id) {
+          keep_link := false
+          link_h := data.VM("l2_links", link_id)
+          if link_h != nil {
 
-            link_h := data.VM("l2_links", link_id)
             matrix_id := link_h.Vs("matrix_id")
             if l2Matrix.EvM(matrix_id) {
               matrix_h := l2Matrix.VM(matrix_id)
@@ -338,12 +339,12 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
               l1_devId := matrix_h.Vs("1", "DevId")
               if (creator == dev_id && devs.EvA(l1_devId, "interfaces", l1_ifName, "l2_links") ||
                  (creator != dev_id && devs.EvA(creator, "interfaces", l0_ifName, "l2_links") {
-                keep_link := false
                 if (creator == dev_id && matrix_h.Vi("_time") == last_seen && check_matrix.Evs(matrix_id)) ||
                    (creator != dev_id && matrix_h.Vi("_time") == devs.Vi(creator, "last_seen") ||
                    false {
                   //if
                   keep_link = true
+                  matrix_h["status"] = int64(1)
                   link_h["status"] = int64(1)
                 } else if (creator == dev_id &&
                            len(if_h.(M).VA("l2_links").([]string)) == 1 &&
@@ -369,12 +370,45 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
                   //else if
                   keep_link = true
                   link_h["status"] = int64(2)
+                  matrix_h["status"] = int64(2)
                 }
 
-                if keep_link {
-                  link_list = append(link_list, link_id)
+              }
+            }
+          }
+          if keep_link {
+            link_list = append(link_list, link_id)
+          } else {
+            if link_h != nil {
+              creator := link_h.Vs("_creator")
+              l0_ifName := link_h.Vs("0", "ifName")
+              l1_ifName := link_h.Vs("1", "ifName")
+              l1_devId := link_h.Vs("1", "DevId")
+
+              if creator == dev_id && devs.EvA(l1_devId, "interfaces", l1_ifName, "l2_links") {
+                list := devs.VA(l1_devId, "interfaces", l1_ifName, "l2_links").([]string)
+                found := -1
+                for i := 0; i < len(old_list); i++ { if list[i] == link_id { found = i; break } }
+                if found >= 0 {
+                  devs.VM(l1_devId, "interfaces", l1_ifName)["l2_links"] = append(list[:found], list[found+1:]...)
                 }
               }
+
+              if creator != dev_id && devs.EvA(creator, "interfaces", l0_ifName, "l2_links") {
+                list := devs.VA(creator, "interfaces", l0_ifName, "l2_links").([]string)
+                found := -1
+                for i := 0; i < len(old_list); i++ { if list[i] == link_id { found = i; break } }
+                if found >= 0 {
+                  devs.VM(creator, "interfaces", l0_ifName)["l2_links"] = append(list[:found], list[found+1:]...)
+                }
+              }
+
+              matrix_id := link_h.Vs("matrix_id")
+
+              delete(data.VM("l2_links"), link_id)
+
+              delete(l2Matrix, matrix_id)
+
             }
           }
         }
@@ -383,78 +417,19 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       }
     }
   }
-  //cleanup outdated links
 
-  del_list := make([]string, 0)
 
-  for ifName, if_h := range dev.VM("interfaces") {
-    if if_h.(M).EvA("l2_links") {
-      link_list := make([]string, 0)
-      for _, link_id := range if_h.(M).VA("l2_links").([]string) {
-        if data.EvM("l2_links", link_id) {
-
-          link_h := data.VM("l2_links", link_id)
-          creator := link_h.Vs("_creator")
-          matrix_id := link_h.Vs("matrix_id")
-          if (creator == dev_id && link_h.Vi("_time") == last_seen && check_matrix.Evs(link_id)) ||
-             (creator != dev_id && devs.EvM(creator) && link_h.Vi("_time") == devs.Vi(creator, "last_seen") ||
-             false {
-            //if
-            link_list = append(link_list, link_id)
-          } else {
-            del_list = append(del_list, link_id)
-          }
-        }
-      }
-      if_h.(M)["l2_links"] = link_list
-    }
-  }
-
-  for _, link_id := range del_list {
-    link_h := l2Matrix.VM(link_id)
-    var if_h M
-    if link_h.EvM("0", "DevId") && link_h.Vs("0", "DevId") != dev_id {
-      rdevid := link_h.Vs("0", "DevId")
-      rifname := link_h.Vs("0", "ifName")
-      if devs.EvM(rdevidm "interfaces", rifname) {
-        if_h = devs.VM(rdevidm "interfaces", rifname)
-      }
-    } else if link_h.EvM("1", "DevId") && link_h.Vs("1", "DevId") != dev_id {
-      rdevid := link_h.Vs("1", "DevId")
-      rifname := link_h.Vs("1", "ifName")
-      if devs.EvM(rdevidm "interfaces", rifname) {
-        if_h = devs.VM(rdevidm "interfaces", rifname)
-      }
-    }
-    if if_h != nil {
-      if if_h.EvA("l2_links") {
-        link_list := make([]string, 0)
-        for _, _id := range if_h.VA("l2_links").([]string) {
-          if id != link_id {
-            link_list = append(link_list, _id)
-          }
-        }
-        if len(link_list) > 0 {
-          if_h["l2_links"] = link_list
-        } else {
-          delete(if_h, "l2_links")
-        }
-      }
-    }
-    delete(l2Matrix, link_id)
-  }
-
-  for link_id, _ := range check_matrix {
+  for matrix_id, _ := range check_matrix {
     var if0_h M
     var if1_h M
-    link_h := l2Matrix.VM(link_id)
+    matrix_h := l2Matrix.VM(matrix_id)
 
-    if check_matrix.Vs(link_id) == dev_id {
-      if0_h = dev.VM("interfaces", link_h.Vs("0", "ifName"))
-      if1_h = devs.VM(link_h.Vs("1", "DevId"), "interfaces", link_h.Vs("1", "ifName"))
+    if check_matrix.Vs(matrix_id) == dev_id {
+      if0_h = dev.VM("interfaces", matrix_h.Vs("0", "ifName"))
+      if1_h = devs.VM(matrix_h.Vs("1", "DevId"), "interfaces", matrix_h.Vs("1", "ifName"))
     } else {
-      if0_h = devs.VM(link_h.Vs("0", "DevId"), "interfaces", link_h.Vs("0", "ifName"))
-      if1_h = dev.VM("interfaces", link_h.Vs("1", "ifName"))
+      if0_h = devs.VM(matrix_h.Vs("0", "DevId"), "interfaces", matrix_h.Vs("0", "ifName"))
+      if1_h = dev.VM("interfaces", matrix_h.Vs("1", "ifName"))
     }
 
     if !if0_h.EvA("l2_links") {
@@ -464,14 +439,14 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     found := false
 
     for _, _id := range if0_h["l2_links"].([]string) {
-      if id == link_id {
+      if id == matrix_id {
         found = true
         break
       }
     }
 
     if !found {
-      if0_h["l2_links"] = append(if0_h["l2_links"].([]string), link_id)
+      if0_h["l2_links"] = append(if0_h["l2_links"].([]string), matrix_id)
     }
 
     if !if1_h.EvA("l2_links") {
@@ -481,14 +456,14 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     found = false
 
     for _, _id := range if1_h["l2_links"].([]string) {
-      if id == link_id {
+      if id == matrix_id {
         found = true
         break
       }
     }
 
     if !found {
-      if1_h["l2_links"] = append(if1_h["l2_links"].([]string), link_id)
+      if1_h["l2_links"] = append(if1_h["l2_links"].([]string), matrix_id)
     }
   }
 
