@@ -15,11 +15,14 @@ import (
   "context"
   "encoding/json"
   "net/http"
+  "flag"
 
   "github.com/gomodule/redigo/redis"
   "github.com/marcsauter/single"
 
+  w "github.com/jimlawless/whereami"
   // "github.com/davecgh/go-spew/spew"
+  "github.com/fatih/color"
 
   . "github.com/ShyLionTjmn/aux"
   . "github.com/ShyLionTjmn/decode_dev"
@@ -49,10 +52,20 @@ var devs = make(M)
 var data = make(M)
 var l2Matrix = make(M) // working map with alternatives
 
+var opt_Q bool
+var opt_1 bool
+var opt_v int
+
 func init() {
   data["l2_links"] = make(M) // exported map with actual links. Keep link with down (2) state if both devices in db and no neighbours and any of it is down or interface is down
   data["l3_links"] = make(M)
   data["dev_list"] = make(M)
+
+  flag.BoolVar(&opt_Q, "Q", false, "ignore queue saves from gomapper")
+  flag.BoolVar(&opt_1, "1", false, "startup and finish")
+  flag.IntVar(&opt_v, "v", 0, "set verbosity level")
+
+  flag.Parse()
 }
 
 var legNeiErrNoDev = errors.New("nd")
@@ -138,7 +151,10 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
   red, err = RedisCheck(red, "unix", REDIS_SOCKET, red_db)
 
-  if red == nil { return }
+  if red == nil {
+    if opt_v > 1 { color.Red(err.Error()) }
+    return
+  }
 
   defer func() { if red != nil { red.Close() } }()
 
@@ -146,6 +162,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     if err != nil && red != nil && red.Err() == nil {
       ip_err := fmt.Sprintf("%d:%s ! %s", time.Now().Unix(), time.Now().Format("2006 Jan 2 15:04:05"), err.Error())
       red.Do("SET", "ip_proc_error."+ip, ip_err)
+      if opt_v > 1 { color.Red(err.Error()) }
     }
   }()
 
@@ -184,6 +201,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     return
   }
 
+fmt.Println("Process:", ip, "Startup:", startup)
   last_seen := int64(0)
   overall_status := "ok"
   if dev_list_state != "run" {
@@ -227,8 +245,9 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   globalMutex.Lock()
   defer globalMutex.Unlock()
 
-  if devs.EvM(dev_id) && devs.Vs(dev_id, "dev_ip") != ip {
-    conflict_ip := devs.Vs(dev_id, "dev_ip")
+  if devs.EvM(dev_id) && devs.Vs(dev_id, "data_ip") != ip {
+color.Red("CONFLICT:", devs.Vs(dev_id, "data_ip"), ip)
+    conflict_ip := devs.Vs(dev_id, "data_ip")
     //there is duplicate device id
     if overall_status == "ok" && devs.Vs(dev_id, "overall_status") != "ok" {
       // duplicate device is old, overwrite it
@@ -280,6 +299,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
           }
 
           var matrix_h M
+          var pass = 0
 
           if l2Matrix.EvM(matrix_id) {
             matrix_h = l2Matrix.VM(matrix_id)
@@ -308,10 +328,14 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
                     matrix_h["_complete"] = int64(1)
                     matrix_h["status"] = int64(1)
                     check_matrix[matrix_id] = rdevid
+color.Green("link established by meeting")
                   }
                 }
               }
 
+              continue
+            } else {
+              pass++
             }
 
           } else {
@@ -360,6 +384,11 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
                 matrix_h["status"] = int64(1)
                 matrix_h["_complete"] = int64(1)
                 check_matrix[norm_matrix_id] = dev_id
+if pass == 0 {
+  color.Green("link established by creator")
+} else {
+  color.Green("link updated by creator")
+}
               }
             }
           }
@@ -377,7 +406,8 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   }
 
   //copy links from previous run and cleanup outdated
-  if !startup && devs.EvM(dev_id, "interfaces") {
+  //if !startup && devs.EvM(dev_id, "interfaces") {
+  if !startup && devs.EvM(dev_id) {
     for ifName, if_h := range devs.VM(dev_id, "interfaces") {
       if if_h.(M).EvA("l2_links") && dev.EvM("interfaces", ifName) {
         link_list := make([]string, 0)
@@ -466,7 +496,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
           }
         }
 
-        if_h.(M)["l2_links"] = link_list
+        dev.VM("interfaces", ifName)["l2_links"] = link_list
       }
     }
   }
@@ -562,11 +592,11 @@ L66:  for !stop_signalled {
           break L66
         case reply := <-rsub.C:
           a := strings.Split(reply, ":")
-          if len(a) == 2 && a[0] == "0" && ip_reg.MatchString(a[1]) {
+          if len(a) == 2 && a[0] == "0" && ip_reg.MatchString(a[1]) && !opt_Q {
             wg.Add(1)
             go process_ip_data(wg, a[1], false)
           }
-          fmt.Println(time.Now().Format("15:04:05"), reply)
+          //fmt.Println(time.Now().Format("15:04:05"), reply)
         }
       }
       rsub.W.Wait()
@@ -665,6 +695,8 @@ var max_open_files uint64
 
 func main() {
 
+  w.WhereAmI()
+
   defer func() { fmt.Println("main return") } ()
 
   var err error
@@ -712,7 +744,8 @@ func main() {
     }
   }
 
-  fmt.Println("Max open files:", max_open_files)
+
+  //fmt.Println("Max open files:", max_open_files)
 
   sig_ch := make(chan os.Signal, 1)
   signal.Notify(sig_ch, syscall.SIGHUP)
@@ -745,11 +778,12 @@ MAIN_LOOP:
       dev_map, err = redis.StringMap(red.Do("HGETALL", "dev_list"))
       if err == nil {
         total_ips := uint64(len(dev_map))
+        fast_start := max_open_files > total_ips+20
         var wg_ sync.WaitGroup
         for ip, _ := range dev_map {
           if ip_reg.MatchString(ip) {
-            //fmt.Println("Load IP", ip)
-            if max_open_files > total_ips+20 {
+            fmt.Println("Load IP", ip)
+            if fast_start {
               wg_.Add(1)
               go process_ip_data(&wg_, ip, true)
             } else {
@@ -757,12 +791,13 @@ MAIN_LOOP:
             }
           }
         }
-        wg_.Wait()
+        if fast_start { wg_.Wait() }
         redis_loaded = true
 
       }
     }
 
+//if queue_data_sub_launched {}
     if redis_loaded && !queue_data_sub_launched {
       fmt.Println("Start processing live reports")
       queue_data_sub_stop := make(chan string, 1)
@@ -771,6 +806,11 @@ MAIN_LOOP:
       wg.Add(1)
       queue_data_sub_launched = true
       go queue_data_sub(queue_data_sub_stop, &wg)
+    }
+
+    if opt_1 {
+      //leave so soon?
+      break MAIN_LOOP
     }
 
     if redis_loaded && !http_launched {
