@@ -103,9 +103,11 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   defer func() { if red != nil { red.Close() } }()
 
   defer func() {
-    if err != nil && red != nil && red.Err() == nil {
-      ip_err := fmt.Sprintf("%d:%s ! %s", time.Now().Unix(), time.Now().Format("2006 Jan 2 15:04:05"), err.Error())
-      red.Do("SET", "ip_proc_error."+ip, ip_err)
+    if err != nil {
+      if red != nil && red.Err() == nil {
+        ip_err := fmt.Sprintf("%d:%s ! %s", time.Now().Unix(), time.Now().Format("2006 Jan 2 15:04:05"), err.Error())
+        red.Do("SET", "ip_proc_error."+ip, ip_err)
+      }
 
       globalMutex.Lock()
       if data.EvM("dev_list", ip) {
@@ -172,12 +174,22 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   dl_h := data.MkM("dev_list", ip)
   dl_h["proc_result"] = "in-progress"
   dl_h["proc_error"] = ""
+
+  prev_dev_list_state := dl_h.Vs("state")
+
   dl_h["state"] = dev_list_state
   dl_h["time"] = time.Now().Unix()
   globalMutex.Unlock()
 
   raw, err = GetRawRed(red, ip)
-  if err != nil { return }
+  if err != nil {
+    if !startup && prev_dev_list_state != "run" && dev_list_state == "run" && err == ErrorQueuesMismatch {
+      //ignore freshly started device with many queues - not all of them saved yet
+      err = nil
+    }
+
+    return
+  }
 
   device := Dev{ Opt_m: false, Opt_a: false, Dev_ip: ip }
 
@@ -200,7 +212,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   }
 
   if opt_v > 1 {
-    fmt.Println("Process:", ip, "Startup:", startup)
+    fmt.Println("Process:", ip)
   }
   last_seen := int64(0)
   overall_status := "ok"
