@@ -29,6 +29,16 @@ var legNeiErrNoDev = errors.New("nd")
 var legNeiErrNoIfName = errors.New("nin")
 var legNeiErrNoPi = errors.New("npi")
 
+type Logger struct {
+  Conn		redis.Conn
+}
+
+func (l *Logger) Event(f ... string) {
+}
+
+func (l *Logger) Save() {
+}
+
 func leg_nei(leg M) (dev_id string, port_index string, if_name string, err error) {
   chid := leg.Vs("ChassisId")
   chidst := leg.Vi("ChassisIdSubtype")
@@ -96,6 +106,14 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     if err != nil && red != nil && red.Err() == nil {
       ip_err := fmt.Sprintf("%d:%s ! %s", time.Now().Unix(), time.Now().Format("2006 Jan 2 15:04:05"), err.Error())
       red.Do("SET", "ip_proc_error."+ip, ip_err)
+
+      globalMutex.Lock()
+      if data.EvM("dev_list", ip) {
+        data.VM("dev_list", ip)["proc_error"] = err.Error()
+        data.VM("dev_list", ip)["proc_result"] = "error"
+        data.VM("dev_list", ip)["time"] = time.Now().Unix()
+      }
+      globalMutex.Unlock()
       if opt_v > 1 { color.Red(err.Error()) }
     }
   }()
@@ -103,21 +121,67 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   var dev_list_state string
   dev_list_state, err = redis.String(red.Do("HGET", "dev_list", ip))
   if err != nil {
-    if err == redis.ErrNil {
-      //device removed from dev_list, just ignore it
+    if err == redis.ErrNil && !startup {
+      //device removed from dev_list, just cleanup and return
       err = nil
 
-      if !startup {
-        //we should clean data
+      globalMutex.Lock()
+      defer globalMutex.Unlock()
+
+      //remove from dev_list
+      delete(data.VM("dev_list"), ip)
+
+      //find dev id by data_ip
+
+      log := &Logger{Conn: red}
+
+      for dev_id, dev_m := range devs {
+        if dev_m.(M).Vs("data_ip") == ip {
+          log.Event(dev_id, "dev_purged", ip)
+          delete(devs, dev_id)
+        }
       }
+
+      log.Save()
     }
     return
   }
+
+  if dev_list_state == "conflict" {
+    if !startup {
+      //dying gasp from gomapper
+      //all states should have been set before
+    } else {
+      //get proc error from redis
+      errstr, _err := redis.String(red.Do("GET", "ip_proc_error."+ip))
+      if _err != nil {
+        errstr = "Unknown proc error"
+      }
+      globalMutex.Lock()
+      dl_h := data.MkM("dev_list", ip)
+      dl_h["proc_result"] = "error"
+      dl_h["proc_error"] = errstr
+      dl_h["state"] = dev_list_state
+      dl_h["time"] = time.Now().Unix()
+      globalMutex.Unlock()
+    }
+    return
+  }
+
+  globalMutex.Lock()
+  dl_h := data.MkM("dev_list", ip)
+  dl_h["proc_result"] = "in-progress"
+  dl_h["proc_error"] = ""
+  dl_h["state"] = dev_list_state
+  dl_h["time"] = time.Now().Unix()
+  globalMutex.Unlock()
 
   raw, err = GetRawRed(red, ip)
   if err != nil { return }
 
   device := Dev{ Opt_m: false, Opt_a: false, Dev_ip: ip }
+
+  process_start := time.Now()
 
   err = device.Decode(raw)
   if err != nil { return }
@@ -193,10 +257,12 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       ip_err := fmt.Sprintf("%d:%s ! %s", time.Now().Unix(), time.Now().Format("2006 Jan 2 15:04:05"), "Pausing due to conflict with running device "+ip)
       red.Do("SET", "ip_proc_error."+conflict_ip, ip_err)
       red.Do("HSET", "dev_list", conflict_ip, "conflict")
+
     } else if devs.Vs(dev_id, "overall_status") == "ok" && overall_status != "ok" {
       // this device is old or paused, ignore data
       red.Do("HSET", "dev_list", ip, "conflict")
       err = errors.New("Conflict with running dev "+conflict_ip+". Pausing. Prev status was: "+overall_status)
+      data.VM("dev_list", ip)["state"] = "conflict"
       return
     } else {
       //both good or both bad. compare last_seen
@@ -210,6 +276,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
         //this dev data is older
         red.Do("HSET", "dev_list", ip, "conflict")
         err = errors.New("Conflict with more recent dev "+conflict_ip+". Pausing. Prev status was: "+overall_status)
+        data.VM("dev_list", ip)["state"] = "conflict"
         return
       }
     }
@@ -415,7 +482,11 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
                 found := -1
                 for i := 0; i < len(list); i++ { if list[i] == link_id { found = i; break } }
                 if found >= 0 {
-                  devs.VM(l1_devId, "interfaces", l1_ifName)["l2_links"] = append(list[:found], list[found+1:]...)
+                  if len(list) > 1 {
+                    devs.VM(l1_devId, "interfaces", l1_ifName)["l2_links"] = append(list[:found], list[found+1:]...)
+                  } else {
+                    delete(devs.VM(l1_devId, "interfaces", l1_ifName), "l2_links")
+                  }
                 }
               }
 
@@ -424,7 +495,11 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
                 found := -1
                 for i := 0; i < len(list); i++ { if list[i] == link_id { found = i; break } }
                 if found >= 0 {
-                  devs.VM(creator, "interfaces", l0_ifName)["l2_links"] = append(list[:found], list[found+1:]...)
+                  if len(list) > 1 {
+                    devs.VM(creator, "interfaces", l0_ifName)["l2_links"] = append(list[:found], list[found+1:]...)
+                  } else {
+                    delete(devs.VM(creator, "interfaces", l0_ifName), "l2_links")
+                  }
                 }
               }
 
@@ -438,7 +513,9 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
           }
         }
 
-        dev.VM("interfaces", ifName)["l2_links"] = link_list
+        if len(link_list) > 0 {
+          dev.VM("interfaces", ifName)["l2_links"] = link_list
+        }
       }
     }
   }
@@ -459,7 +536,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     }
 
     if !if0_h.EvA("l2_links") {
-      if0_h["l2_links"] = make([]string, 1)
+      if0_h["l2_links"] = make([]string, 0)
     }
 
     found := false
@@ -476,7 +553,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     }
 
     if !if1_h.EvA("l2_links") {
-      if1_h["l2_links"] = make([]string, 1)
+      if1_h["l2_links"] = make([]string, 0)
     }
 
     found = false
@@ -503,4 +580,9 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     // check what's changed
     devs[dev_id] = dev
   }
+
+  proc_time := time.Now().Sub(process_start)
+
+  data.VM("dev_list", ip)["proc_result"] = "done in "+strconv.FormatInt(int64(proc_time/time.Millisecond), 10)+" ms"
+  data.VM("dev_list", ip)["time"] = time.Now().Unix()
 }

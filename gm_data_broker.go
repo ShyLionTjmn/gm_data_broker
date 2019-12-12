@@ -55,10 +55,19 @@ var opt_Q bool
 var opt_1 bool
 var opt_v int
 
+const TRY_OPEN_FILES uint64=65536
+var max_open_files uint64
+
 func init() {
   data["l2_links"] = make(M) // exported map with actual links. Keep link with down (2) state if both devices in db and no neighbours and any of it is down or interface is down
   data["l3_links"] = make(M)
   data["dev_list"] = make(M)
+
+  w.WhereAmI()
+  errors.New("")
+  strconv.Itoa(0)
+
+  ip_reg = regexp.MustCompile(IP_REGEX)
 
   flag.BoolVar(&opt_Q, "Q", false, "ignore queue saves from gomapper")
   flag.BoolVar(&opt_1, "1", false, "startup and finish")
@@ -118,7 +127,7 @@ L66:  for !stop_signalled {
           break L66
         case reply := <-rsub.C:
           a := strings.Split(reply, ":")
-          if len(a) == 2 && a[0] == "0" && ip_reg.MatchString(a[1]) && !opt_Q {
+          if len(a) >= 2 && a[0] == "0" && ip_reg.MatchString(a[1]) && !opt_Q {
             wg.Add(1)
             go process_ip_data(wg, a[1], false)
           }
@@ -131,7 +140,7 @@ L66:  for !stop_signalled {
       if !stop_signalled {
         redState(false)
         if opt_v > 0 {
-          fmt.Println("subscriber returned error: "+err.Error())
+          color.Red("subscriber returned error: "+err.Error())
         }
       }
     }
@@ -208,7 +217,7 @@ func http_server(stop chan string, wg *sync.WaitGroup) {
     shut_err := s.Shutdown(ctx)
     if shut_err != nil {
       if opt_v > 0 {
-        fmt.Printf("HTTP server Shutdown error: %v\n", shut_err)
+        color.Red("HTTP server Shutdown error: %v\n", shut_err)
       }
     }
     close(server_shut)
@@ -220,26 +229,15 @@ func http_server(stop chan string, wg *sync.WaitGroup) {
   http_err := s.ListenAndServe()
   if http_err != http.ErrServerClosed {
     if opt_v > 0 {
-      fmt.Println("HTTP server shot down with error:", http_err)
+      color.Red("HTTP server shot down with error:", http_err)
     }
   }
   <-server_shut
 }
 
-const TRY_OPEN_FILES uint64=65536
-var max_open_files uint64
-
 func main() {
 
-  w.WhereAmI()
-  errors.New("")
-  strconv.Itoa(0)
-  color.White("")
-
   var err error
-
-  ip_reg = regexp.MustCompile(IP_REGEX)
-
 
   single_run := single.New("gm_data_broker."+red_db) // add redis_db here later
 
