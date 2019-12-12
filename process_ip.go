@@ -84,6 +84,45 @@ func l2l_key(cid1, pid1, cid2, pid2 string) string {
   }
 }
 
+func wipe_dev(dev_id string) {
+  delete(devs, dev_id)
+  if dev_refs.EvM(dev_id, "l2_links") {
+    for link_id, link_m := range dev_refs.VM(dev_id, "l2_links") {
+      link_h := link_m.(M)
+      matrix_id := link_h.Vs("matrix_id")
+      alt_matrix_id := link_h.Vs("alt_matrix_id")
+      var nei_leg M
+      if link_h.Vs("_creator") == dev_id {
+        nei_leg = link_h.VM("1")
+      } else {
+        nei_leg = link_h.VM("0")
+      }
+      if nei_dev_id, ok := nei_leg.Vse("DevId"); ok {
+        nei_if := nei_leg.Vs("ifName")
+        if nei_if_a, ok := devs.VAe(nei_dev_id, "interfaces", nei_if, "l2_links"); ok {
+          l := len(nei_if_a.([]string))
+          for i := 0; i < l; i++ {
+            if nei_if_a.([]string)[i] == link_id {
+              if l == 1 {
+                delete(devs.VM(nei_dev_id, "interfaces", nei_if), "l2_links")
+              } else {
+                devs.VM(nei_dev_id, "interfaces", nei_if)["l2_links"] = append(nei_if_a.([]string)[:i], nei_if_a.([]string)[i+1:]...)
+              }
+              break
+            }
+          }
+        }
+        if dev_refs.EvM(nei_dev_id, "l2Matrix") {
+          delete(dev_refs.VM(nei_dev_id, "l2Matrix"), matrix_id)
+          delete(dev_refs.VM(nei_dev_id, "l2Matrix"), alt_matrix_id)
+        }
+        if dev_refs.EvM(nei_dev_id, "l2_links") { delete(dev_refs.VM(nei_dev_id, "l2_links"), link_id) }
+      }
+    }
+  }
+  delete(dev_refs, dev_id)
+}
+
 func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   if wg != nil {
     defer wg.Done()
@@ -278,7 +317,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     //there is duplicate device id
     if overall_status == "ok" && devs.Vs(dev_id, "overall_status") != "ok" {
       // duplicate device is old, overwrite it
-      delete(devs, dev_id)
+      wipe_dev(dev_id)
       ip_err := fmt.Sprintf("%d:%s ! %s", time.Now().Unix(), time.Now().Format("2006 Jan 2 15:04:05"), "Pausing due to conflict with running device "+ip)
       red.Do("SET", "ip_proc_error."+conflict_ip, ip_err)
       red.Do("HSET", "dev_list", conflict_ip, "conflict")
@@ -293,7 +332,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       //both good or both bad. compare last_seen
       if last_seen > devs.Vi(dev_id, "last_seen") {
         //this dev is more recent
-        delete(devs, dev_id)
+        wipe_dev(dev_id)
         ip_err := fmt.Sprintf("%d:%s ! %s", time.Now().Unix(), time.Now().Format("2006 Jan 2 15:04:05"), "Pausing due to conflict with more recent device "+ip)
         red.Do("SET", "ip_proc_error."+conflict_ip, ip_err)
         red.Do("HSET", "dev_list", conflict_ip, "conflict")
@@ -308,7 +347,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   }
 
   //check for id change
-  if prev_id, _err := data.Vse("dev_list", ip , "id"); _err == nil && prev_id != dev_id {
+  if prev_id, ok := data.Vse("dev_list", ip , "id"); ok && prev_id != dev_id {
     wipe_dev(prev_id)
     if opt_v > 0 {
       color.Yellow("Dev id changed. Previous data purged: %s, %s", prev_id, ip)
@@ -389,14 +428,15 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
           } else {
             matrix_h = l2Matrix.MkM(norm_matrix_id)
+            dev_refs.MkM(dev_id, "l2Matrix", norm_matrix_id)
           }
 
           matrix_h["_creator"] = dev_id
           matrix_h["_complete"] = int64(0)
-          matrix_h["_alt"] = int64(0)
+          matrix_h["alt"] = int64(0)
           matrix_h["status"] = int64(2)
           matrix_h["matrix_id"] = norm_matrix_id
-          matrix_h["_alt_matrix_id"] = alt_matrix_id
+          matrix_h["alt_matrix_id"] = alt_matrix_id
           matrix_h["_time"] = last_seen
 
           leg0_h := matrix_h.MkM("0")
@@ -425,6 +465,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
           if nei_error != legNeiErrNoDev && nei_error != legNeiErrNoPi {
             leg1_h["DevId"] = nei_dev_id
+            dev_refs.MkM(nei_dev_id, "l2Matrix", norm_matrix_id)
             leg1_h["PortIndex"] = nei_port_index
             matrix_h["link_id"]=l2l_key(matrix_h.Vs("0", "DevId"), matrix_h.Vs("0", "PortIndex"), matrix_h.Vs("1", "DevId"), matrix_h.Vs("1", "PortIndex"))
             if nei_error != legNeiErrNoIfName {
@@ -446,10 +487,14 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
           if norm_matrix_id != alt_matrix_id && matrix_h["_complete"] != 1 {
             alt_matrix_h := matrix_h.Copy()
-            alt_matrix_h["_alt"] = int64(1)
-            alt_matrix_h["_alt_matrix_id"] = norm_matrix_id
+            alt_matrix_h["alt"] = int64(1)
+            alt_matrix_h["alt_matrix_id"] = norm_matrix_id
             alt_matrix_h["matrix_id"] = alt_matrix_id
             l2Matrix[alt_matrix_id] = alt_matrix_h
+            dev_refs.MkM(dev_id, "l2Matrix", alt_matrix_id)
+            if alt_matrix_h.Evs("1", "Dev_id") {
+              dev_refs.MkM(alt_matrix_h.Vs("1", "Dev_id"), "l2Matrix", alt_matrix_id)
+            }
           }
         }
       }
@@ -468,8 +513,6 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
           went_down := false
 
           if link_h != nil {
-
-
             matrix_id := link_h.Vs("matrix_id")
             if l2Matrix.EvM(matrix_id) {
               matrix_h := l2Matrix.VM(matrix_id)
@@ -514,14 +557,6 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
                 }
 
               }
-              if !keep_link {
-                if dev_refs.EvM(creator, "l2Matrix") { delete(dev_refs.VM(creator, "l2Matrix"), matrix_id) }
-                if creator == dev_id {
-                  if dev_refs.EvM(l1_devId, "l2Matrix") { delete(dev_refs.VM(l1_devId, "l2Matrix"), matrix_id) }
-                } else {
-                  if dev_refs.EvM(dev_id, "l2Matrix") { delete(dev_refs.VM(dev_id, "l2Matrix"), matrix_id) }
-                }
-              }
             }
           }
           if keep_link {
@@ -540,6 +575,8 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
               l0_ifName := link_h.Vs("0", "ifName")
               l1_ifName := link_h.Vs("1", "ifName")
               l1_devId := link_h.Vs("1", "DevId")
+              matrix_id := link_h.Vs("matrix_id")
+              alt_matrix_id := link_h.Vs("alt_matrix_id")
 
               if creator == dev_id && devs.EvA(l1_devId, "interfaces", l1_ifName, "l2_links") {
                 list := devs.VA(l1_devId, "interfaces", l1_ifName, "l2_links").([]string)
@@ -567,11 +604,30 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
                 }
               }
 
-              matrix_id := link_h.Vs("matrix_id")
+
+              if dev_refs.EvM(creator, "l2Matrix") {
+                delete(dev_refs.VM(creator, "l2Matrix"), matrix_id)
+                delete(dev_refs.VM(creator, "l2Matrix"), alt_matrix_id)
+              }
+              if dev_refs.EvM(creator, "l2_links") { delete(dev_refs.VM(creator, "l2_links"), link_id) }
+              if creator == dev_id {
+                if dev_refs.EvM(l1_devId, "l2Matrix") {
+                  delete(dev_refs.VM(l1_devId, "l2Matrix"), matrix_id)
+                  delete(dev_refs.VM(l1_devId, "l2Matrix"), alt_matrix_id)
+                }
+                if dev_refs.EvM(l1_devId, "l2_links") { delete(dev_refs.VM(l1_devId, "l2_links"), link_id) }
+              } else {
+                if dev_refs.EvM(dev_id, "l2Matrix") {
+                  delete(dev_refs.VM(dev_id, "l2Matrix"), matrix_id)
+                  delete(dev_refs.VM(dev_id, "l2Matrix"), alt_matrix_id)
+                }
+                if dev_refs.EvM(dev_id, "l2_links") { delete(dev_refs.VM(dev_id, "l2_links"), link_id) }
+              }
 
               delete(data.VM("l2_links"), link_id)
 
               delete(l2Matrix, matrix_id)
+              delete(l2Matrix, alt_matrix_id)
 
             }
           }
@@ -591,12 +647,17 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     matrix_h := l2Matrix.VM(matrix_id)
     link_id := matrix_h.Vs("link_id")
 
+    dev_refs.MkM(dev_id, "l2_links", link_id)
+
     if check_matrix.Vs(matrix_id) == dev_id {
       if0_h = dev.VM("interfaces", matrix_h.Vs("0", "ifName"))
       if1_h = devs.VM(matrix_h.Vs("1", "DevId"), "interfaces", matrix_h.Vs("1", "ifName"))
+
+      dev_refs.MkM(matrix_h.Vs("1", "DevId"), "l2_links", link_id)
     } else {
       if0_h = devs.VM(matrix_h.Vs("0", "DevId"), "interfaces", matrix_h.Vs("0", "ifName"))
       if1_h = dev.VM("interfaces", matrix_h.Vs("1", "ifName"))
+      dev_refs.MkM(matrix_h.Vs("0", "DevId"), "l2_links", link_id)
     }
 
     if !if0_h.EvA("l2_links") {

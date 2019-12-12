@@ -164,29 +164,26 @@ L66:  for !stop_signalled {
   }
 }
 
-func myHttpHandlerDebug(w http.ResponseWriter, req *http.Request) {
-  req.ParseForm()
-  globalMutex.RLock()
-  m := make(M)
-  m["data"] = data
-  m["l2Matrix"] = l2Matrix
-  j, err := json.MarshalIndent(m, "", "  ")
-  globalMutex.RUnlock()
-
-  if err != nil {
-    http.Error(w, err.Error(), http.StatusInternalServerError)
-    return
-  }
-
-  w.Header().Add("Content-Type", "text/javascript")
-  w.Write(j)
-}
-
-
 func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
   req.ParseForm()
   globalMutex.RLock()
-  j, err := json.MarshalIndent(devs, "", "  ")
+  var j []byte
+  var err error
+
+  if req.URL.Path == "/debug" || req.URL.Path == "/debug/" {
+    m := make(M)
+    m["data"] = data
+    m["l2Matrix"] = l2Matrix
+    j, err = json.MarshalIndent(m, "", "  ")
+  } else if req.URL.Path == "/refs" || req.URL.Path == "/refs/" {
+    j, err = json.MarshalIndent(dev_refs, "", "  ")
+  } else if req.URL.Path == "/" {
+    j, err = json.MarshalIndent(devs, "", "  ")
+  } else {
+    globalMutex.RUnlock()
+    http.Error(w, "Not found", http.StatusNotFound)
+    return
+  }
   globalMutex.RUnlock()
 
   if err != nil {
@@ -196,6 +193,7 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
 
   w.Header().Add("Content-Type", "text/javascript")
   w.Write(j)
+  w.Write([]byte("\n"))
 }
 
 
@@ -225,7 +223,6 @@ func http_server(stop chan string, wg *sync.WaitGroup) {
   }()
 
   http.HandleFunc("/", myHttpHandlerRoot)
-  http.HandleFunc("/debug/", myHttpHandlerDebug)
 
   http_err := s.ListenAndServe()
   if http_err != http.ErrServerClosed {
