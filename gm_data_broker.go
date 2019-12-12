@@ -50,6 +50,7 @@ var globalMutex = &sync.RWMutex{}
 var devs = make(M)
 var data = make(M)
 var l2Matrix = make(M) // working map with alternatives
+var dev_refs = make(M) // device references for faster lookups
 
 var opt_Q bool
 var opt_1 bool
@@ -140,7 +141,7 @@ L66:  for !stop_signalled {
       if !stop_signalled {
         redState(false)
         if opt_v > 0 {
-          color.Red("subscriber returned error: "+err.Error())
+          color.Red("subscriber returned error: %s", err.Error())
         }
       }
     }
@@ -229,7 +230,7 @@ func http_server(stop chan string, wg *sync.WaitGroup) {
   http_err := s.ListenAndServe()
   if http_err != http.ErrServerClosed {
     if opt_v > 0 {
-      color.Red("HTTP server shot down with error:", http_err)
+      color.Red("HTTP server shot down with error: %s", http_err)
     }
   }
   <-server_shut

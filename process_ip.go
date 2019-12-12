@@ -96,7 +96,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   red, err = RedisCheck(red, "unix", REDIS_SOCKET, red_db)
 
   if red == nil {
-    if opt_v > 1 { color.Red(err.Error()) }
+    if opt_v > 1 { color.Red("%s", err.Error()) }
     return
   }
 
@@ -116,7 +116,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
         data.VM("dev_list", ip)["time"] = time.Now().Unix()
       }
       globalMutex.Unlock()
-      if opt_v > 1 { color.Red(err.Error()) }
+      if opt_v > 1 { color.Red("%s", err.Error()) }
     }
   }()
 
@@ -140,11 +140,18 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       for dev_id, dev_m := range devs {
         if dev_m.(M).Vs("data_ip") == ip {
           log.Event(dev_id, "dev_purged", ip)
-          delete(devs, dev_id)
+          wipe_dev(dev_id)
+          if opt_v > 0 {
+            color.Yellow("Dev purged: %s, %s", dev_id, ip)
+          }
         }
       }
 
       log.Save()
+
+      if opt_v > 1 {
+        color.Yellow("Dev gone: %s", ip)
+      }
     }
     return
   }
@@ -186,6 +193,12 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     if !startup && prev_dev_list_state != "run" && dev_list_state == "run" && err == ErrorQueuesMismatch {
       //ignore freshly started device with many queues - not all of them saved yet
       err = nil
+      globalMutex.Lock()
+      defer globalMutex.Unlock()
+      data.VM("dev_list", ip)["proc_result"] = "postproned"
+      if opt_v > 1 {
+        fmt.Println("Postprone:", ip)
+      }
     }
 
     return
@@ -259,7 +272,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
   if devs.EvM(dev_id) && devs.Vs(dev_id, "data_ip") != ip {
     if opt_v > 0 {
-      color.Red("CONFLICT:", devs.Vs(dev_id, "data_ip"), ip)
+      color.Red("CONFLICT: %s vs %s", devs.Vs(dev_id, "data_ip"), ip)
     }
     conflict_ip := devs.Vs(dev_id, "data_ip")
     //there is duplicate device id
@@ -294,6 +307,16 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     }
   }
 
+  //check for id change
+  if prev_id, _err := data.Vse("dev_list", ip , "id"); _err == nil && prev_id != dev_id {
+    wipe_dev(prev_id)
+    if opt_v > 0 {
+      color.Yellow("Dev id changed. Previous data purged: %s, %s", prev_id, ip)
+    }
+  } else {
+    data.VM("dev_list", ip)["id"] = dev_id
+  }
+
   // process links
   check_matrix := make(M)
 
@@ -322,6 +345,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
             matrix_h = l2Matrix.VM(matrix_id)
             if matrix_h.Vs("_creator") != dev_id {
 
+              prev_complete := matrix_h.Vi("_complete")
               //reset its status
               matrix_h["status"] = int64(2)
               matrix_h["_complete"] = int64(0)
@@ -330,6 +354,8 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
               leg1_h := matrix_h.VM("1")
               leg1_h["PortIndex"] = port_index
               leg1_h["DevId"] = dev_id
+
+              dev_refs.MkM(dev_id, "l2Matrix", matrix_id)
 
               matrix_h["link_id"]=l2l_key(matrix_h.Vs("0", "DevId"), matrix_h.Vs("0", "PortIndex"), matrix_h.Vs("1", "DevId"), matrix_h.Vs("1", "PortIndex"))
 
@@ -346,7 +372,11 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
                     matrix_h["status"] = int64(1)
                     check_matrix[matrix_id] = rdevid
                     if opt_v > 1 {
-                      color.Green("link established by meeting")
+                      if prev_complete == 1 {
+                        color.HiBlack("link updateed by meeting: %s", matrix_h.Vs("link_id"))
+                      } else {
+                        color.Green("link established by meeting: %s", matrix_h.Vs("link_id"))
+                      }
                     }
                   }
                 }
@@ -405,9 +435,9 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
                 check_matrix[norm_matrix_id] = dev_id
                 if opt_v > 1 {
                   if pass == 0 {
-                    color.Green("link established by creator")
+                    color.Green("link established by creator: %s", matrix_h.Vs("link_id"))
                   } else {
-                    color.Green("link updated by creator")
+                    color.HiBlack("link updated by creator: %s", matrix_h.Vs("link_id"))
                   }
                 }
               }
@@ -435,7 +465,10 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
         for _, link_id := range if_h.(M).VA("l2_links").([]string) {
           keep_link := false
           link_h := data.VM("l2_links", link_id)
+          went_down := false
+
           if link_h != nil {
+
 
             matrix_id := link_h.Vs("matrix_id")
             if l2Matrix.EvM(matrix_id) {
@@ -473,16 +506,35 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
                           false {
                   //else if
                   keep_link = true
+                  if link_h.Vi("status") != 2 {
+                    went_down = true
+                  }
                   link_h["status"] = int64(2)
                   matrix_h["status"] = int64(2)
                 }
 
               }
+              if !keep_link {
+                if dev_refs.EvM(creator, "l2Matrix") { delete(dev_refs.VM(creator, "l2Matrix"), matrix_id) }
+                if creator == dev_id {
+                  if dev_refs.EvM(l1_devId, "l2Matrix") { delete(dev_refs.VM(l1_devId, "l2Matrix"), matrix_id) }
+                } else {
+                  if dev_refs.EvM(dev_id, "l2Matrix") { delete(dev_refs.VM(dev_id, "l2Matrix"), matrix_id) }
+                }
+              }
             }
           }
           if keep_link {
             link_list = append(link_list, link_id)
+            if went_down {
+              if opt_v > 1 {
+                color.Magenta("link down: %s", link_id)
+              }
+            }
           } else {
+            if opt_v > 1 {
+              color.Cyan("link gone: %s", link_id)
+            }
             if link_h != nil {
               creator := link_h.Vs("_creator")
               l0_ifName := link_h.Vs("0", "ifName")
