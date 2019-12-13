@@ -48,6 +48,8 @@ var ip_reg *regexp.Regexp
 var globalMutex = &sync.RWMutex{}
 //locks this maps:
 var devs = make(M)
+var devs_macs = make(M)
+var devs_arp = make(M)
 var data = make(M)
 var l2Matrix = make(M) // working map with alternatives
 var dev_refs = make(M) // device references for faster lookups
@@ -177,6 +179,11 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
     j, err = json.MarshalIndent(m, "", "  ")
   } else if req.URL.Path == "/refs" || req.URL.Path == "/refs/" {
     j, err = json.MarshalIndent(dev_refs, "", "  ")
+  } else if req.URL.Path == "/macs" {
+    m := make(M)
+    m["macs"]=devs_macs
+    m["arp"]=devs_arp
+    j, err = json.MarshalIndent(m, "", "  ")
   } else if req.URL.Path == "/" {
     j, err = json.MarshalIndent(devs, "", "  ")
   } else {

@@ -86,6 +86,9 @@ func l2l_key(cid1, pid1, cid2, pid2 string) string {
 
 func wipe_dev(dev_id string) {
   delete(devs, dev_id)
+  delete(devs_macs, dev_id)
+  delete(devs_arp, dev_id)
+
   if dev_refs.EvM(dev_id, "l2_links") {
     for link_id, _ := range dev_refs.VM(dev_id, "l2_links") {
       if link_h, ok := data.VMe("l2_links", link_id); ok {
@@ -729,6 +732,18 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   } else {
     // check what's changed
     devs[dev_id] = dev
+  }
+
+  if device.Opt_m && device.Dev_macs != nil && len(device.Dev_macs) > 0 {
+    devs_macs[dev_id] = device.Dev_macs
+  } else {
+    delete(devs_macs, dev_id)
+  }
+
+  if device.Opt_a && device.Dev_arp != nil && len(device.Dev_arp) > 0 {
+    devs_arp[dev_id] = device.Dev_arp
+  } else {
+    delete(devs_arp, dev_id)
   }
 
   proc_time := time.Now().Sub(process_start)
