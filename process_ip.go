@@ -87,37 +87,62 @@ func l2l_key(cid1, pid1, cid2, pid2 string) string {
 func wipe_dev(dev_id string) {
   delete(devs, dev_id)
   if dev_refs.EvM(dev_id, "l2_links") {
-    for link_id, link_m := range dev_refs.VM(dev_id, "l2_links") {
-      link_h := link_m.(M)
-      matrix_id := link_h.Vs("matrix_id")
-      alt_matrix_id := link_h.Vs("alt_matrix_id")
-      var nei_leg M
-      if link_h.Vs("_creator") == dev_id {
-        nei_leg = link_h.VM("1")
-      } else {
-        nei_leg = link_h.VM("0")
-      }
-      if nei_dev_id, ok := nei_leg.Vse("DevId"); ok {
-        nei_if := nei_leg.Vs("ifName")
-        if nei_if_a, ok := devs.VAe(nei_dev_id, "interfaces", nei_if, "l2_links"); ok {
-          l := len(nei_if_a.([]string))
-          for i := 0; i < l; i++ {
-            if nei_if_a.([]string)[i] == link_id {
-              if l == 1 {
-                delete(devs.VM(nei_dev_id, "interfaces", nei_if), "l2_links")
-              } else {
-                devs.VM(nei_dev_id, "interfaces", nei_if)["l2_links"] = append(nei_if_a.([]string)[:i], nei_if_a.([]string)[i+1:]...)
+    for link_id, _ := range dev_refs.VM(dev_id, "l2_links") {
+      if link_h, ok := data.VMe("l2_links", link_id); ok {
+        matrix_id := link_h.Vs("matrix_id")
+        alt_matrix_id := link_h.Vs("alt_matrix_id")
+        var nei_leg M
+        if link_h.Vs("_creator") == dev_id {
+          nei_leg = link_h.VM("1")
+        } else {
+          nei_leg = link_h.VM("0")
+        }
+        if nei_dev_id, ok := nei_leg.Vse("DevId"); ok {
+          nei_if := nei_leg.Vs("ifName")
+          if nei_if_a, ok := devs.VAe(nei_dev_id, "interfaces", nei_if, "l2_links"); ok {
+            l := len(nei_if_a.([]string))
+            for i := 0; i < l; i++ {
+              if nei_if_a.([]string)[i] == link_id {
+                if l == 1 {
+                  delete(devs.VM(nei_dev_id, "interfaces", nei_if), "l2_links")
+                } else {
+                  devs.VM(nei_dev_id, "interfaces", nei_if)["l2_links"] = append(nei_if_a.([]string)[:i], nei_if_a.([]string)[i+1:]...)
+                }
+                break
               }
-              break
             }
           }
+          if dev_refs.EvM(nei_dev_id, "l2Matrix") {
+            delete(dev_refs.VM(nei_dev_id, "l2Matrix"), matrix_id)
+            delete(dev_refs.VM(nei_dev_id, "l2Matrix"), alt_matrix_id)
+          }
+          if dev_refs.EvM(nei_dev_id, "l2_links") {
+            delete(dev_refs.VM(nei_dev_id, "l2_links"), link_id)
+          }
         }
-        if dev_refs.EvM(nei_dev_id, "l2Matrix") {
-          delete(dev_refs.VM(nei_dev_id, "l2Matrix"), matrix_id)
-          delete(dev_refs.VM(nei_dev_id, "l2Matrix"), alt_matrix_id)
-        }
-        if dev_refs.EvM(nei_dev_id, "l2_links") { delete(dev_refs.VM(nei_dev_id, "l2_links"), link_id) }
+        delete(l2Matrix, matrix_id)
+        delete(l2Matrix, alt_matrix_id)
       }
+      delete(data.VM("l2_links"), link_id)
+    }
+  }
+
+  if dev_refs.EvM(dev_id, "l2Matrix") {
+    for matrix_id, _ := range dev_refs.VM(dev_id, "l2Matrix") {
+      if matrix_h, ok := l2Matrix.VMe(matrix_id); ok {
+        var nei_leg M
+        if matrix_h.Vs("_creator") == dev_id {
+          nei_leg = matrix_h.VM("1")
+        } else {
+          nei_leg = matrix_h.VM("0")
+        }
+        if nei_dev_id, ok := nei_leg.Vse("DevId"); ok {
+          if dev_refs.EvM(nei_dev_id, "l2Matrix") {
+            delete(dev_refs.VM(nei_dev_id, "l2Matrix"), matrix_id)
+          }
+        }
+      }
+      delete(l2Matrix, matrix_id)
     }
   }
   delete(dev_refs, dev_id)
@@ -243,7 +268,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     return
   }
 
-  device := Dev{ Opt_m: false, Opt_a: false, Dev_ip: ip }
+  device := Dev{ Opt_m: true, Opt_a: true, Dev_ip: ip }
 
   process_start := time.Now()
 
