@@ -29,11 +29,18 @@ var legNeiErrNoDev = errors.New("nd")
 var legNeiErrNoIfName = errors.New("nin")
 var legNeiErrNoPi = errors.New("npi")
 
+var scalarWatchKeys = []string{"sysName",", ""locChassisSysName", "snmpEngineId", "sysLocation", "locChassisIdSubtype", "sysDescr",
+                               "locChassisId", "overall_status", "sysObjectID", "sysContact", "CiscoConfSave", "data_ip", "short_name",
+                               "powerState",
+                              }
+
+const NL="\n"
+
 type Logger struct {
   Conn		redis.Conn
 }
 
-func (l *Logger) Event(f ... string) {
+func (l *Logger) Event(f ... string) { // dev_id, "event", key|"", "attr", value, "attr", value, ...
 }
 
 func (l *Logger) Save() {
@@ -148,6 +155,21 @@ func wipe_dev(dev_id string) {
       delete(l2Matrix, matrix_id)
     }
   }
+
+  if dev_refs.EvM(dev_id, "l3_links") {
+    for net, net_m := range dev_refs.VM(dev_id, "l3_links") {
+      for if_ip, _ := range net_m.(M) {
+        if l3link_ip_h, ok := data.VMe("l3_links", net, if_ip); ok {
+          if l3link_ip_h.Vs("dev_id") == dev_id {
+            delete(data.VM("l3_links", net), if_ip)
+            if len(data.VM("l3_links", net)) == 0 {
+              delete(data.VM("l3_links"), net)
+            }
+          }
+        }
+      }
+    }
+  }
   delete(dev_refs, dev_id)
 }
 
@@ -206,7 +228,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
       for dev_id, dev_m := range devs {
         if dev_m.(M).Vs("data_ip") == ip {
-          log.Event(dev_id, "dev_purged", ip)
+          log.Event(dev_id, "dev_purged", "", "ip", ip)
           wipe_dev(dev_id)
           if opt_v > 0 {
             color.Yellow("Dev purged: %s, %s", dev_id, ip)
@@ -761,6 +783,8 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
                     register = true
                   }
                 }
+              } else {
+                register = true
               }
             } else {
               register = true
@@ -778,13 +802,6 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     }
   }
 
-  if !devs.EvM(dev_id) {
-    devs[dev_id] = dev
-  } else {
-    // check what's changed
-    devs[dev_id] = dev
-  }
-
   if device.Opt_m && device.Dev_macs != nil && len(device.Dev_macs) > 0 {
     devs_macs[dev_id] = device.Dev_macs
   } else {
@@ -795,6 +812,44 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     devs_arp[dev_id] = device.Dev_arp
   } else {
     delete(devs_arp, dev_id)
+  }
+
+  if startup {
+    devs[dev_id] = dev
+  } else {
+    logger := &Logger{Conn: red}
+
+    if !devs.EvM(dev_id) {
+      devs[dev_id] = dev
+      location, _ := dev.Vse("sysLocation")
+      logger.Event(dev_id, "dev_new", "", "ip", ip, "short_name", dev.Vs("short_name"), "loc", location)
+    } else {
+      // check what's changed
+
+      old := devs.VM(dev_id)
+
+      for _, key := range scalarWatchKeys {
+        if old.EvA(key) && !dev.EvA(key) {
+          logger.Event(dev_id, "key_gone", key, "old_value", old.Vs(key))
+        } else if !old.EvA(key) && dev.EvA(key) {
+          logger.Event(dev_id, "key_new", key, "new_value", dev.Vs(key))
+        } else if old.EvA(key) && dev.EvA(key) && reflect.TypeOf(old.VA(key)) != reflect.TypeOf(dev.VA(key)) {
+          logger.Event(dev_id, "key_type_change", key, "olt_type", reflect.TypeOf(old.VA(key)).String(), "new_type", reflect.TypeOf(dev.VA(key)).String())
+          logger.Event(dev_id, "key_change", key, "old_value", old.Vs(key), "new_value", dev.Vs(key))
+        } else if old.EvA(key) && dev.EvA(key) && old.VA(key) != dev.VA(key) {
+          logger.Event(dev_id, "key_change", key, "old_value", old.Vs(key), "new_value", dev.Vs(key))
+
+          //alert if changes
+          dev_alert(dev, old, "", key, old.Vs(key), dev.Vs(key))
+        }
+      }
+
+
+
+      devs[dev_id] = dev
+    }
+
+    logger.Save()
   }
 
   proc_time := time.Now().Sub(process_start)
