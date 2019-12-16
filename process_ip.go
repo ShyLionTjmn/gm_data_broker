@@ -34,6 +34,7 @@ var scalarWatchKeys = []string{"sysName",", ""locChassisSysName", "snmpEngineId"
                                "powerState",
                               }
 
+var alertScalarKeys = []string{"overall_status", "powerState"}
 const NL="\n"
 
 type Logger struct {
@@ -839,8 +840,10 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
         } else if old.EvA(key) && dev.EvA(key) && old.VA(key) != dev.VA(key) {
           logger.Event(dev_id, "key_change", key, "old_value", old.Vs(key), "new_value", dev.Vs(key))
 
-          //alert if changes
-          dev_alert(dev, old, "", key, old.Vs(key), dev.Vs(key))
+          if IndexOf(alertScalarKeys, key) {
+            //alert if changes
+            dev_alert(dev, old, "", key, old.Vs(key), dev.Vs(key))
+          }
         }
       }
 
