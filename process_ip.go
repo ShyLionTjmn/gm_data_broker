@@ -8,6 +8,8 @@ import (
   "errors"
   "strings"
   "strconv"
+  "sort"
+  "reflect"
 
   "github.com/gomodule/redigo/redis"
 
@@ -29,12 +31,25 @@ var legNeiErrNoDev = errors.New("nd")
 var legNeiErrNoIfName = errors.New("nin")
 var legNeiErrNoPi = errors.New("npi")
 
-var scalarWatchKeys = []string{"sysName",", ""locChassisSysName", "snmpEngineId", "sysLocation", "locChassisIdSubtype", "sysDescr",
+var devWatchKeys = []string{"sysName", "locChassisSysName", "snmpEngineId", "sysLocation", "locChassisIdSubtype", "sysDescr",
                                "locChassisId", "overall_status", "sysObjectID", "sysContact", "CiscoConfSave", "data_ip", "short_name",
                                "powerState",
                               }
 
-var alertScalarKeys = []string{"overall_status", "powerState"}
+var devAlertKeys = []string{"overall_status", "powerState"}
+
+var intWatchKeys = []string{"ifOperStatus", "portId", "ifAdminStatus", "ifIndex", "ifAlias", "ifType",
+                            "portMode", "portTrunkVlans", "portHybridTag", "portHybridUntag", "portPvid",
+                           }
+
+var lldpKeySet = []string{"RemSysName", "RemChassisId", "RemChassisIdSubtype", "RemPortDescr", "RemPortId", "RemPortIdSubtype"}
+
+type ByInt64 []int64
+
+func (a ByInt64) Len() int		{ return len(a) }
+func (a ByInt64) Swap(i, j int)		{ a[i], a[j] = a[j], a[i] }
+func (a ByInt64) Less(i, j int) bool	{ return a[i] < a[j] }
+
 const NL="\n"
 
 type Logger struct {
@@ -45,6 +60,9 @@ func (l *Logger) Event(f ... string) { // dev_id, "event", key|"", "attr", value
 }
 
 func (l *Logger) Save() {
+}
+
+func dev_alert(new M, old M, ifName string, key string) {
 }
 
 func leg_nei(leg M) (dev_id string, port_index string, if_name string, err error) {
@@ -829,25 +847,171 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
       old := devs.VM(dev_id)
 
-      for _, key := range scalarWatchKeys {
+      for _, key := range devWatchKeys {
         if old.EvA(key) && !dev.EvA(key) {
           logger.Event(dev_id, "key_gone", key, "old_value", old.Vs(key))
         } else if !old.EvA(key) && dev.EvA(key) {
           logger.Event(dev_id, "key_new", key, "new_value", dev.Vs(key))
         } else if old.EvA(key) && dev.EvA(key) && reflect.TypeOf(old.VA(key)) != reflect.TypeOf(dev.VA(key)) {
-          logger.Event(dev_id, "key_type_change", key, "olt_type", reflect.TypeOf(old.VA(key)).String(), "new_type", reflect.TypeOf(dev.VA(key)).String())
+          logger.Event(dev_id, "key_type_change", key, "old_type", reflect.TypeOf(old.VA(key)).String(), "new_type", reflect.TypeOf(dev.VA(key)).String())
           logger.Event(dev_id, "key_change", key, "old_value", old.Vs(key), "new_value", dev.Vs(key))
         } else if old.EvA(key) && dev.EvA(key) && old.VA(key) != dev.VA(key) {
           logger.Event(dev_id, "key_change", key, "old_value", old.Vs(key), "new_value", dev.Vs(key))
 
-          if IndexOf(alertScalarKeys, key) >= 0 {
+          if IndexOf(devAlertKeys, key) >= 0 {
             //alert if changes
-            dev_alert(dev, old, "", key, old.Vs(key), dev.Vs(key))
+            dev_alert(dev, old, "", key)
           }
         }
       }
 
+      for ifName, _ := range dev.VM("interfaces") {
+        if !old.EvM("interfaces", ifName) {
+          logger.Event(dev_id, "if_new", ifName)
+        } else {
+          if ifName != "CPU port" {
+            for _, key := range intWatchKeys {
+              if !old.EvA("interfaces", ifName, key) && dev.EvA("interfaces", ifName, key) {
+                logger.Event(dev_id, "if_key_new", ifName, "key", key)
+              } else if old.EvA("interfaces", ifName, key) && !dev.EvA("interfaces", ifName, key) {
+                logger.Event(dev_id, "if_key_gone", ifName, "key", key)
+              } else if reflect.TypeOf(old.VA("interfaces", ifName, key)) != reflect.TypeOf(dev.VA("interfaces", ifName, key)) {
+                logger.Event(dev_id, "if_key_type_change", ifName, "key", key,
+                             "old_type", reflect.TypeOf(old.VA("interfaces", ifName, key)).String(),
+                             "new_type", reflect.TypeOf(dev.VA("interfaces", ifName, key)).String())
+                logger.Event(dev_id, "if_key_change", ifName, "key", key, "old_value", old.Vs("interfaces", ifName, key),
+                                                                          "new_value", dev.Vs("interfaces", ifName, key))
+              } else if old.VA("interfaces", ifName, key) != dev.VA("interfaces", ifName, key) {
+                logger.Event(dev_id, "if_key_change", ifName, "key", key, "old_value", old.Vs("interfaces", ifName, key),
+                                                                          "new_value", dev.Vs("interfaces", ifName, key))
 
+                if key == "ifOperStatus" && old.Vi("interfaces", ifName, "ifAdminStatus") == dev.Vi("interfaces", ifName, "ifAdminStatus") {
+                  dev_alert(dev, old, ifName, key)
+                }
+              }
+            }
+          }
+
+          // check ips change
+          if dev.EvM("interfaces", ifName, "ips") {
+            for if_ip, _ := range dev.VM("interfaces", ifName, "ips") {
+              if !old.EvM("interfaces", ifName, "ips", if_ip) {
+                logger.Event(dev_id, "if_ip_new", ifName, "ip", if_ip, "mask", dev.Vs("interfaces", ifName, "ips", if_ip, "mask"))
+              } else if dev.Vs("interfaces", ifName, "ips", if_ip, "mask") != old.Vs("interfaces", ifName, "ips", if_ip, "mask") {
+                logger.Event(dev_id, "if_ip_mask_change", ifName, "ip", if_ip, "old_mask", old.Vs("interfaces", ifName, "ips", if_ip, "mask"),
+                                                                               "new_mask", dev.Vs("interfaces", ifName, "ips", if_ip, "mask"))
+              }
+            }
+          }
+          if old.EvM("interfaces", ifName, "ips") {
+            for if_ip, _ := range old.VM("interfaces", ifName, "ips") {
+              if !dev.EvM("interfaces", ifName, "ips", if_ip) {
+                logger.Event(dev_id, "if_ip_gone", ifName, "ip", if_ip, "mask", old.Vs("interfaces", ifName, "ips", if_ip, "mask"))
+              }
+            }
+          }
+
+          //check STP states
+
+          var new_stp_blocked_inst=""
+          var old_stp_blocked_inst=""
+
+          if dev.EvA("interfaces", ifName, "stpBlockInstances") {
+            inst_i64 := dev.VA("interfaces", ifName, "stpBlockInstances").([]int64)
+            sort.Sort(ByInt64(inst_i64))
+            s := make([]string, 0)
+            for i := 0; i < len(inst_i64); i++ {
+              s = append(s, strconv.FormatInt(inst_i64[i], 10))
+            }
+            new_stp_blocked_inst = strings.Join(s, ",")
+          }
+
+          if old.EvA("interfaces", ifName, "stpBlockInstances") {
+            inst_i64 := old.VA("interfaces", ifName, "stpBlockInstances").([]int64)
+            sort.Sort(ByInt64(inst_i64))
+            s := make([]string, 0)
+            for i := 0; i < len(inst_i64); i++ {
+              s = append(s, strconv.FormatInt(inst_i64[i], 10))
+            }
+            old_stp_blocked_inst = strings.Join(s, ",")
+          }
+
+          if new_stp_blocked_inst != old_stp_blocked_inst {
+            logger.Event(dev_id, "if_stp_block_change", ifName, "old_blocked_inst", old_stp_blocked_inst, "new_blocked_inst", new_stp_blocked_inst)
+          }
+
+
+
+        }
+      } //dev.interfaces
+
+      for ifName, _ := range old.VM("interfaces") {
+        if !dev.EvM("interfaces", ifName) {
+          logger.Event(dev_id, "if_gone", ifName)
+        }
+      }
+
+      if dev.EvM("lldp_ports") {
+        for port_index, _ := range dev.VM("lldp_ports") {
+          if !old.EvM("lldp_ports", port_index) {
+            //would spam from mikrotiks, say nothing
+          } else {
+            new_pn := make(M)
+            old_pn := make(M)
+
+            if dev.EvM("lldp_ports", port_index, "neighbours") {
+              for nei, _ := range dev.VM("lldp_ports", port_index, "neighbours") {
+                var key = ""
+                for _, subkey := range lldpKeySet {
+                  if dev.EvA("lldp_ports", port_index, "neighbours", nei, subkey) {
+                    key += ":"+dev.Vs("lldp_ports", port_index, "neighbours", nei, subkey)
+                  }
+                }
+                new_pn[key] = nei
+              }
+            }
+
+            if old.EvM("lldp_ports", port_index, "neighbours") {
+              for nei, _ := range old.VM("lldp_ports", port_index, "neighbours") {
+                var key = ""
+                for _, subkey := range lldpKeySet {
+                  if old.EvA("lldp_ports", port_index, "neighbours", nei, subkey) {
+                    key += ":"+old.Vs("lldp_ports", port_index, "neighbours", nei, subkey)
+                  }
+                }
+                old_pn[key] = nei
+              }
+            }
+
+            for key, nei_i := range new_pn {
+              nei := nei_i.(string)
+              if !old_pn.EvA(key) {
+                attrs := make([]string, 0)
+                attrs = append(attrs, dev_id, "lldp_port_nei_new", port_index)
+                for _, subkey := range lldpKeySet {
+                  if dev.EvA("lldp_ports", port_index, "neighbours", nei, subkey) {
+                    attrs = append(attrs, subkey, dev.Vs("lldp_ports", port_index, "neighbours", nei, subkey))
+                  }
+                }
+                logger.Event(attrs...)
+              }
+            }
+            for key, nei_i := range old_pn {
+              nei := nei_i.(string)
+              if !old_pn.EvA(key) {
+                attrs := make([]string, 0)
+                attrs = append(attrs, dev_id, "lldp_port_nei_gone", port_index)
+                for _, subkey := range lldpKeySet {
+                  if old.EvA("lldp_ports", port_index, "neighbours", nei, subkey) {
+                    attrs = append(attrs, subkey, old.Vs("lldp_ports", port_index, "neighbours", nei, subkey))
+                  }
+                }
+                logger.Event(attrs...)
+              }
+            }
+          }
+        }
+      }
 
       devs[dev_id] = dev
     }
