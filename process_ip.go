@@ -840,7 +840,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
         } else if old.EvA(key) && dev.EvA(key) && old.VA(key) != dev.VA(key) {
           logger.Event(dev_id, "key_change", key, "old_value", old.Vs(key), "new_value", dev.Vs(key))
 
-          if IndexOf(alertScalarKeys, key) {
+          if IndexOf(alertScalarKeys, key) >= 0 {
             //alert if changes
             dev_alert(dev, old, "", key, old.Vs(key), dev.Vs(key))
           }
