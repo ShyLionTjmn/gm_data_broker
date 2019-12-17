@@ -62,7 +62,24 @@ func (l *Logger) Event(f ... string) { // dev_id, "event", key|"", "attr", value
 func (l *Logger) Save() {
 }
 
-func dev_alert(new M, old M, ifName string, key string) {
+type Alerter struct {
+  Conn          redis.Conn
+}
+
+func (a *Alerter) Alert(new M, old M, ifName string, key string) {
+  m := make(M)
+  if ifName == "" {
+    m["alert_type"]="dev"
+    for _, k := range []string{"id", "overall_status", "last_seen", "data_ip", "short_name", "powerState", "sysObjectID", "sysLocation"} {
+      val, _ := new.VAe(k)
+      m[k]=val
+    }
+  } else {
+    m["alert_type"]="int"
+  }
+}
+
+func (a *Alerter) Save() {
 }
 
 func leg_nei(leg M) (dev_id string, port_index string, if_name string, err error) {
@@ -837,6 +854,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     devs[dev_id] = dev
   } else {
     logger := &Logger{Conn: red}
+    alerter := &Alerter{Conn: red}
 
     if !devs.EvM(dev_id) {
       devs[dev_id] = dev
@@ -860,7 +878,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
           if IndexOf(devAlertKeys, key) >= 0 {
             //alert if changes
-            dev_alert(dev, old, "", key)
+            alerter.Alert(dev, old, "", key)
           }
         }
       }
@@ -886,7 +904,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
                                                                           "new_value", dev.Vs("interfaces", ifName, key))
 
                 if key == "ifOperStatus" && old.Vi("interfaces", ifName, "ifAdminStatus") == dev.Vi("interfaces", ifName, "ifAdminStatus") {
-                  dev_alert(dev, old, ifName, key)
+                  alerter.Alert(dev, old, ifName, key)
                 }
               }
             }
@@ -1017,6 +1035,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     }
 
     logger.Save()
+    alerter.Save()
   }
 
   proc_time := time.Now().Sub(process_start)
