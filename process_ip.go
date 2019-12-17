@@ -33,11 +33,11 @@ var legNeiErrNoIfName = errors.New("nin")
 var legNeiErrNoPi = errors.New("npi")
 
 var devWatchKeys = []string{"sysName", "locChassisSysName", "snmpEngineId", "sysLocation", "locChassisIdSubtype", "sysDescr",
-                               "locChassisId", "overall_status", "sysObjectID", "sysContact", "CiscoConfSave", "data_ip", "short_name",
+                               "locChassisId", "sysObjectID", "sysContact", "CiscoConfSave", "data_ip", "short_name",
                                "powerState",
                               }
 
-var devAlertKeys = []string{"overall_status", "powerState"}
+var devAlertKeys = []string{"powerState"}
 
 var intWatchKeys = []string{"ifOperStatus", "portId", "ifAdminStatus", "ifIndex", "ifAlias", "ifType",
                             "portMode", "portTrunkVlans", "portHybridTag", "portHybridUntag", "portPvid",
@@ -51,24 +51,26 @@ func (a ByInt64) Len() int		{ return len(a) }
 func (a ByInt64) Swap(i, j int)		{ a[i], a[j] = a[j], a[i] }
 func (a ByInt64) Less(i, j int) bool	{ return a[i] < a[j] }
 
-const NL="\n"
+const NL = "\n"
 
-const LOG_MAX_EVENTS=1_000_000
+const LOG_MAX_EVENTS = 1000
+const ALERT_MAX_EVENTS = 10000
 
 type Logger struct {
   Conn		redis.Conn
+  Dev		string
 }
 
-func (l *Logger) Event(f ... string) { // dev_id, "event", key|"", "attr", value, "attr", value, ...
-  if len(f) < 3 { return } //wtf?
+func (l *Logger) Event(f ... string) { // "event", key|"", "attr", value, "attr", value, ...
+  if len(f) < 2 { return } //wtf?
   m := make(M)
-  m["id"] = f[0]
-  m["event"] = f[1]
-  m["key"] = f[2]
+  m["event"] = f[0]
+  m["key"] = f[1]
+  m["time"] = time.Now().Unix()
 
-  if len(f) > 4 {
+  if len(f) > 3 {
     m["fields"] = make(M)
-    for i := 3; i < (len(f) - 1); i += 2 {
+    for i := 2; i < (len(f) - 1); i += 2 {
       m["fields"].(M)[f[i]] = f[i+1]
     }
   }
@@ -76,14 +78,15 @@ func (l *Logger) Event(f ... string) { // dev_id, "event", key|"", "attr", value
   j, err := json.Marshal(m)
   if err == nil {
     if l.Conn != nil && l.Conn.Err() == nil {
-      l.Conn.Do("LPUSH", "log", j)
+      l.Conn.Do("LPUSH", "log."+l.Dev, j)
     }
   }
 }
 
 func (l *Logger) Save() {
   if l.Conn != nil && l.Conn.Err() == nil {
-    l.Conn.Do("LTRIM", "log", 0, LOG_MAX_EVENTS)
+    l.Conn.Do("LTRIM", "log."+l.Dev, 0, LOG_MAX_EVENTS)
+    l.Conn.Do("PUBLISH", "log.poke", l.Dev+"\t"+time.Now().String())
   }
 }
 
@@ -91,7 +94,7 @@ type Alerter struct {
   Conn          redis.Conn
 }
 
-func (a *Alerter) Alert(new M, old M, ifName string, key string) {
+func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) {
   m := make(M)
 
   m["id"] = new.Vs("id")
@@ -99,43 +102,40 @@ func (a *Alerter) Alert(new M, old M, ifName string, key string) {
   m["short_name"] = new.Vs("short_name")
   m["sysObjectID"] = new.Vs("sysObjectID")
   m["sysLocation"] = new.Vs("sysLocation")
+  m["last_seen"] = new.Vs("last_seen")
   m["alert_key"] = key
-  m["new"] = make(M)
-  m["old"] = make(M)
+  m["time"] = time.Now().Unix()
+  m["old"] = old
 
   if ifName == "" {
     m["alert_type"] = "dev"
-    for _, k := range []string{"overall_status", "last_seen", "powerState"} {
-      val, _ := new.VAe(k)
-      m["new"].(M)[k] = val
-
-      oval, _ := old.VAe(k)
-      m["old"].(M)[k] = oval
-    }
+    m["new"] = new.VA(key)
   } else {
-    m["alert_type"]="int"
+    m["alert_type"] = "int"
     m["ifAlias"] = new.Vs("ifAlias")
     m["ifType"] = new.Vs("ifType")
     m["portMode"] = new.Vs("portMode")
     m["ifName"] = ifName
-    for _, k := range []string{"ifOperStatus"} {
-      val, _ := new.VAe("interfaces", ifName, k)
-      m["new"].(M)[k] = val
-
-      oval, _ := old.VAe("interfaces", ifName, k)
-      m["old"].(M)[k] = oval
-    }
+    m["new"] = new.VA("interfaces", ifName, key)
   }
 
   j, err := json.Marshal(m)
   if err == nil {
     if a.Conn != nil && a.Conn.Err() == nil {
-      a.Conn.Do("PUBLISH", "alert", j)
+      a.Conn.Do("LPUSH", "alert", j)
+
+      if key == "overall_status" {
+        a.Conn.Do("SET", "status_alert."+new.Vs("id"), strconv.FormatInt(time.Now().Unix(), 10)+";"+new.Vs("data_ip")+";"+new.Vs("overall_status"))
+      }
     }
   }
 }
 
 func (a *Alerter) Save() {
+  if a.Conn != nil && a.Conn.Err() == nil {
+    a.Conn.Do("LTRIM", "alert", 0, ALERT_MAX_EVENTS)
+    a.Conn.Do("PUBLISH", "alert.poke", time.Now().String())
+  }
 }
 
 func leg_nei(leg M) (dev_id string, port_index string, if_name string, err error) {
@@ -448,6 +448,27 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
   dev_id := dev.Vs("id")
 
+  var redstr string
+  redstr, err = redis.String(red.Do("GET", "status_alert."+dev_id))
+
+  if err != nil && err != redis.ErrNil {
+    return
+  }
+
+  status_alerted_value := ""
+  status_alerted_time := int64(0)
+
+  if err == nil {
+    a := strings.Split(redstr, ";")
+    if len(a) == 3 && a[1] == ip {
+      status_alerted_time, err = strconv.ParseInt(a[0], 10, 64)
+      if err != nil { return }
+      status_alerted_value = a[2]
+    }
+  }
+
+  err = nil
+
   globalMutex.Lock()
   defer globalMutex.Unlock()
 
@@ -538,7 +559,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
               dev_refs.MkM(dev_id, "l2Matrix", matrix_id)
 
-              matrix_h["link_id"]=l2l_key(matrix_h.Vs("0", "DevId"), matrix_h.Vs("0", "PortIndex"), matrix_h.Vs("1", "DevId"), matrix_h.Vs("1", "PortIndex"))
+              matrix_h["link_id"] = l2l_key(matrix_h.Vs("0", "DevId"), matrix_h.Vs("0", "PortIndex"), matrix_h.Vs("1", "DevId"), matrix_h.Vs("1", "PortIndex"))
 
               if port_h.(M).Evs("ifName") {
                 leg1_h["ifName"] = port_h.(M).Vs("ifName")
@@ -609,7 +630,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
             leg1_h["DevId"] = nei_dev_id
             dev_refs.MkM(nei_dev_id, "l2Matrix", norm_matrix_id)
             leg1_h["PortIndex"] = nei_port_index
-            matrix_h["link_id"]=l2l_key(matrix_h.Vs("0", "DevId"), matrix_h.Vs("0", "PortIndex"), matrix_h.Vs("1", "DevId"), matrix_h.Vs("1", "PortIndex"))
+            matrix_h["link_id"] = l2l_key(matrix_h.Vs("0", "DevId"), matrix_h.Vs("0", "PortIndex"), matrix_h.Vs("1", "DevId"), matrix_h.Vs("1", "PortIndex"))
             if nei_error != legNeiErrNoIfName {
               leg1_h["ifName"] = nei_ifname
               if port_h.(M).Evs("ifName") {
@@ -909,67 +930,67 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   dev["_startup"] = startup
 
   if startup {
+    dev["_status_alerted_value"] = status_alerted_value
+    dev["_status_alerted_time"] = status_alerted_time
     devs[dev_id] = dev
   } else {
-    logger := &Logger{Conn: red}
+    logger := &Logger{Conn: red, Dev: dev_id}
     alerter := &Alerter{Conn: red}
 
-    if !devs.EvM(dev_id) {
+    if old, ok := devs.VMe(dev_id); !ok {
       devs[dev_id] = dev
       location, _ := dev.Vse("sysLocation")
-      logger.Event(dev_id, "dev_new", "", "ip", ip, "short_name", dev.Vs("short_name"), "loc", location)
+      logger.Event("dev_new", "", "ip", ip, "short_name", dev.Vs("short_name"), "loc", location)
     } else {
       // check what's changed
 
-      old := devs.VM(dev_id)
-
-      status_alerted_value, _ := old.VAs("_status_alerted_value")
-      status_alerted_time, _ := old.VAi("_status_alerted_time")
+      if old.Vs("overall_status") != dev.Vs("overall_status") || (status_alerted_value != "" && status_alerted_value != dev.Vs("overall_status")) {
+        status_alerted_value = dev.Vs("overall_status")
+        status_alerted_time = time.Now().Unix()
+        alerter.Alert(dev, old, "", "overall_status")
+        logger.Event("key_change", "overall_status", "old_value", old.Vs("overall_status"), "new_value", dev.Vs("overall_status"))
+      }
 
       for _, key := range devWatchKeys {
         if old.EvA(key) && !dev.EvA(key) {
-          logger.Event(dev_id, "key_gone", key, "old_value", old.Vs(key))
+          logger.Event("key_gone", key, "old_value", old.Vs(key))
         } else if !old.EvA(key) && dev.EvA(key) {
-          logger.Event(dev_id, "key_new", key, "new_value", dev.Vs(key))
+          logger.Event("key_new", key, "new_value", dev.Vs(key))
         } else if old.EvA(key) && dev.EvA(key) && reflect.TypeOf(old.VA(key)) != reflect.TypeOf(dev.VA(key)) {
-          logger.Event(dev_id, "key_type_change", key, "old_type", reflect.TypeOf(old.VA(key)).String(), "new_type", reflect.TypeOf(dev.VA(key)).String())
-          logger.Event(dev_id, "key_change", key, "old_value", old.Vs(key), "new_value", dev.Vs(key))
+          logger.Event("key_type_change", key, "old_type", reflect.TypeOf(old.VA(key)).String(), "new_type", reflect.TypeOf(dev.VA(key)).String())
+          logger.Event("key_change", key, "old_value", old.Vs(key), "new_value", dev.Vs(key))
         } else if old.EvA(key) && dev.EvA(key) && old.VA(key) != dev.VA(key) {
-          logger.Event(dev_id, "key_change", key, "old_value", old.Vs(key), "new_value", dev.Vs(key))
+          logger.Event("key_change", key, "old_value", old.Vs(key), "new_value", dev.Vs(key))
 
           if IndexOf(devAlertKeys, key) >= 0 {
             //alert if changes
-            alerter.Alert(dev, old, "", key)
-            if key == "overall_status" {
-              status_alerted_value = dev.Vs(key)
-              status_alerted_time = time.Now().Unix()
-            }
+            alerter.Alert(dev, old.VA(key), "", key)
           }
         }
       }
 
       for ifName, _ := range dev.VM("interfaces") {
         if !old.EvM("interfaces", ifName) {
-          logger.Event(dev_id, "if_new", ifName)
+          logger.Event("if_new", ifName)
         } else {
           if ifName != "CPU port" {
             for _, key := range intWatchKeys {
               if !old.EvA("interfaces", ifName, key) && dev.EvA("interfaces", ifName, key) {
-                logger.Event(dev_id, "if_key_new", ifName, "key", key)
+                logger.Event("if_key_new", ifName, "key", key)
               } else if old.EvA("interfaces", ifName, key) && !dev.EvA("interfaces", ifName, key) {
-                logger.Event(dev_id, "if_key_gone", ifName, "key", key)
+                logger.Event("if_key_gone", ifName, "key", key)
               } else if reflect.TypeOf(old.VA("interfaces", ifName, key)) != reflect.TypeOf(dev.VA("interfaces", ifName, key)) {
-                logger.Event(dev_id, "if_key_type_change", ifName, "key", key,
+                logger.Event("if_key_type_change", ifName, "key", key,
                              "old_type", reflect.TypeOf(old.VA("interfaces", ifName, key)).String(),
                              "new_type", reflect.TypeOf(dev.VA("interfaces", ifName, key)).String())
-                logger.Event(dev_id, "if_key_change", ifName, "key", key, "old_value", old.Vs("interfaces", ifName, key),
+                logger.Event("if_key_change", ifName, "key", key, "old_value", old.Vs("interfaces", ifName, key),
                                                                           "new_value", dev.Vs("interfaces", ifName, key))
               } else if old.VA("interfaces", ifName, key) != dev.VA("interfaces", ifName, key) {
-                logger.Event(dev_id, "if_key_change", ifName, "key", key, "old_value", old.Vs("interfaces", ifName, key),
+                logger.Event("if_key_change", ifName, "key", key, "old_value", old.Vs("interfaces", ifName, key),
                                                                           "new_value", dev.Vs("interfaces", ifName, key))
 
                 if key == "ifOperStatus" && old.Vi("interfaces", ifName, "ifAdminStatus") == dev.Vi("interfaces", ifName, "ifAdminStatus") {
-                  alerter.Alert(dev, old, ifName, key)
+                  alerter.Alert(dev, old.VA("interfaces", ifName, key), ifName, key)
                 }
               }
             }
@@ -979,9 +1000,9 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
           if dev.EvM("interfaces", ifName, "ips") {
             for if_ip, _ := range dev.VM("interfaces", ifName, "ips") {
               if !old.EvM("interfaces", ifName, "ips", if_ip) {
-                logger.Event(dev_id, "if_ip_new", ifName, "ip", if_ip, "mask", dev.Vs("interfaces", ifName, "ips", if_ip, "mask"))
+                logger.Event("if_ip_new", ifName, "ip", if_ip, "mask", dev.Vs("interfaces", ifName, "ips", if_ip, "mask"))
               } else if dev.Vs("interfaces", ifName, "ips", if_ip, "mask") != old.Vs("interfaces", ifName, "ips", if_ip, "mask") {
-                logger.Event(dev_id, "if_ip_mask_change", ifName, "ip", if_ip, "old_mask", old.Vs("interfaces", ifName, "ips", if_ip, "mask"),
+                logger.Event("if_ip_mask_change", ifName, "ip", if_ip, "old_mask", old.Vs("interfaces", ifName, "ips", if_ip, "mask"),
                                                                                "new_mask", dev.Vs("interfaces", ifName, "ips", if_ip, "mask"))
               }
             }
@@ -989,15 +1010,15 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
           if old.EvM("interfaces", ifName, "ips") {
             for if_ip, _ := range old.VM("interfaces", ifName, "ips") {
               if !dev.EvM("interfaces", ifName, "ips", if_ip) {
-                logger.Event(dev_id, "if_ip_gone", ifName, "ip", if_ip, "mask", old.Vs("interfaces", ifName, "ips", if_ip, "mask"))
+                logger.Event("if_ip_gone", ifName, "ip", if_ip, "mask", old.Vs("interfaces", ifName, "ips", if_ip, "mask"))
               }
             }
           }
 
           //check STP states
 
-          var new_stp_blocked_inst=""
-          var old_stp_blocked_inst=""
+          var new_stp_blocked_inst = ""
+          var old_stp_blocked_inst = ""
 
           if dev.EvA("interfaces", ifName, "stpBlockInstances") {
             inst_i64 := dev.VA("interfaces", ifName, "stpBlockInstances").([]int64)
@@ -1020,7 +1041,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
           }
 
           if new_stp_blocked_inst != old_stp_blocked_inst {
-            logger.Event(dev_id, "if_stp_block_change", ifName, "old_blocked_inst", old_stp_blocked_inst, "new_blocked_inst", new_stp_blocked_inst)
+            logger.Event("if_stp_block_change", ifName, "old_blocked_inst", old_stp_blocked_inst, "new_blocked_inst", new_stp_blocked_inst)
           }
 
 
@@ -1030,7 +1051,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
       for ifName, _ := range old.VM("interfaces") {
         if !dev.EvM("interfaces", ifName) {
-          logger.Event(dev_id, "if_gone", ifName)
+          logger.Event("if_gone", ifName)
         }
       }
 
