@@ -10,6 +10,7 @@ import (
   "strconv"
   "sort"
   "reflect"
+  "encoding/json"
 
   "github.com/gomodule/redigo/redis"
 
@@ -52,14 +53,38 @@ func (a ByInt64) Less(i, j int) bool	{ return a[i] < a[j] }
 
 const NL="\n"
 
+const LOG_MAX_EVENTS=1_000_000
+
 type Logger struct {
   Conn		redis.Conn
 }
 
 func (l *Logger) Event(f ... string) { // dev_id, "event", key|"", "attr", value, "attr", value, ...
+  if len(f) < 3 { return } //wtf?
+  m := make(M)
+  m["id"] = f[0]
+  m["event"] = f[1]
+  m["key"] = f[2]
+
+  if len(f) > 4 {
+    m["fields"] = make(M)
+    for i := 3; i < (len(f) - 1); i += 2 {
+      m["fields"].(M)[f[i]] = f[i+1]
+    }
+  }
+
+  j, err := json.Marshal(m)
+  if err == nil {
+    if l.Conn != nil && l.Conn.Err() == nil {
+      l.Conn.Do("LPUSH", "log", j)
+    }
+  }
 }
 
 func (l *Logger) Save() {
+  if l.Conn != nil && l.Conn.Err() == nil {
+    l.Conn.Do("LTRIM", "log", 0, LOG_MAX_EVENTS)
+  }
 }
 
 type Alerter struct {
@@ -68,14 +93,45 @@ type Alerter struct {
 
 func (a *Alerter) Alert(new M, old M, ifName string, key string) {
   m := make(M)
+
+  m["id"] = new.Vs("id")
+  m["data_ip"] = new.Vs("data_ip")
+  m["short_name"] = new.Vs("short_name")
+  m["sysObjectID"] = new.Vs("sysObjectID")
+  m["sysLocation"] = new.Vs("sysLocation")
+  m["alert_key"] = key
+  m["new"] = make(M)
+  m["old"] = make(M)
+
   if ifName == "" {
-    m["alert_type"]="dev"
-    for _, k := range []string{"id", "overall_status", "last_seen", "data_ip", "short_name", "powerState", "sysObjectID", "sysLocation"} {
+    m["alert_type"] = "dev"
+    for _, k := range []string{"overall_status", "last_seen", "powerState"} {
       val, _ := new.VAe(k)
-      m[k]=val
+      m["new"].(M)[k] = val
+
+      oval, _ := old.VAe(k)
+      m["old"].(M)[k] = oval
     }
   } else {
     m["alert_type"]="int"
+    m["ifAlias"] = new.Vs("ifAlias")
+    m["ifType"] = new.Vs("ifType")
+    m["portMode"] = new.Vs("portMode")
+    m["ifName"] = ifName
+    for _, k := range []string{"ifOperStatus"} {
+      val, _ := new.VAe("interfaces", ifName, k)
+      m["new"].(M)[k] = val
+
+      oval, _ := old.VAe("interfaces", ifName, k)
+      m["old"].(M)[k] = oval
+    }
+  }
+
+  j, err := json.Marshal(m)
+  if err == nil {
+    if a.Conn != nil && a.Conn.Err() == nil {
+      a.Conn.Do("PUBLISH", "alert", j)
+    }
   }
 }
 
@@ -850,6 +906,8 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     delete(devs_arp, dev_id)
   }
 
+  dev["_startup"] = startup
+
   if startup {
     devs[dev_id] = dev
   } else {
@@ -865,6 +923,9 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
       old := devs.VM(dev_id)
 
+      status_alerted_value, _ := old.VAs("_status_alerted_value")
+      status_alerted_time, _ := old.VAi("_status_alerted_time")
+
       for _, key := range devWatchKeys {
         if old.EvA(key) && !dev.EvA(key) {
           logger.Event(dev_id, "key_gone", key, "old_value", old.Vs(key))
@@ -879,6 +940,10 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
           if IndexOf(devAlertKeys, key) >= 0 {
             //alert if changes
             alerter.Alert(dev, old, "", key)
+            if key == "overall_status" {
+              status_alerted_value = dev.Vs(key)
+              status_alerted_time = time.Now().Unix()
+            }
           }
         }
       }
@@ -1030,6 +1095,9 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
           }
         }
       }
+
+      dev["_status_alerted_value"] = status_alerted_value
+      dev["_status_alerted_time"] = status_alerted_time
 
       devs[dev_id] = dev
     }
