@@ -30,6 +30,8 @@ import (
 )
 
 const WARN_AGE=300
+const DEAD_AGE=600
+
 const DB_REFRESH_TIME= 10
 const DB_ERROR_TIME= 5
 
@@ -100,6 +102,31 @@ func redState(ok bool) {
     }
   }
 }
+
+func read_devlist (red redis.Conn) (M, error) {
+  ret := make(M)
+  var err error
+  var hash map[string]string
+
+  hash, err = redis.StringMap(red.Do("HGETALL", "dev_list"))
+  if err != nil { return nil, err }
+
+  for ip, val := range hash {
+    a := strings.Split(val, ":")
+    if len(a) == 2 && ip_reg.MatchString(ip) && a[1] != "ignore" {
+      var t int64
+      t, err = strconv.ParseInt(a[0], 10, 64)
+      if err == nil && t <= time.Now().Unix() {
+        ret[ip] = make(M)
+        ret[ip].(M)["time"] = t
+        ret[ip].(M)["state"] = a[1]
+      }
+    }
+  }
+
+  return ret, nil
+}
+
 
 func queue_data_sub(stop_ch chan string, wg *sync.WaitGroup) {
   //defer func() { r := recover(); if r != nil { fmt.Println("queue_data_sub: recover from:", r) } }()
@@ -315,9 +342,9 @@ MAIN_LOOP:
     redState(red != nil && err == nil)
 
     if !redis_loaded && red != nil {
-      var dev_map map[string]string
+      var dev_map M
 
-      dev_map, err = redis.StringMap(red.Do("HGETALL", "dev_list"))
+      dev_map, err = read_devlist(red)
       if err == nil {
         total_ips := uint64(len(dev_map))
         fast_start := max_open_files > total_ips+20
@@ -387,6 +414,65 @@ MAIN_LOOP:
       }
       continue MAIN_LOOP
     case <- main_timer.C:
+      if redis_loaded && red != nil && red.Err() == nil {
+        var dev_map M
+        dev_map, err = read_devlist(red)
+        if err != nil {
+          continue MAIN_LOOP
+        }
+
+        var gomapper_run int64 = 0
+        var redstr string
+        redstr, err = redis.String(red.Do("GET", "gomapper.run"))
+        if err == nil {
+          var gm_start int64
+          var gm_last int64
+          a := strings.Split(redstr, ":")
+          if len(a) == 2 {
+            gm_start, err = strconv.ParseInt(a[0], 10, 64)
+            if err != nil { continue MAIN_LOOP }
+            gm_last, err = strconv.ParseInt(a[1], 10, 64)
+            if err != nil { continue MAIN_LOOP }
+            gomapper_run = gm_last - gm_start
+          }
+        }
+        if err == redis.ErrNil { err = nil }
+        if err != nil { continue MAIN_LOOP }
+
+        globalMutex.Lock()
+
+        //check for deleted ips from dev_list
+        for ip, _ := range data.VM("dev_list") {
+          if _, ok := dev_map[ip]; !ok {
+            //no such ip in redis dev_list
+            if dev_id, ok := data.Vse("dev_list", ip, "id"); ok {
+              wipe_dev(dev_id)
+            }
+            delete(data.VM("dev_list"), ip)
+          }
+        }
+
+        now_unix := time.Now().Unix()
+
+        for dev_id, _ := range devs {
+          ip := devs.Vs(dev_id, "data_ip")
+          //check if dev ip is not in lists
+          if _, ok := dev_map[ip]; !ok || !data.EvM("dev_list", ip) {
+            wipe_dev(dev_id)
+            delete(data.VM("dev_list"), ip)
+          } else if gomapper_run > 90 && (now_unix - devs.Vi(dev_id, "time")) > WARN_AGE && (now_unix - dev_map.Vi(ip, "time")) > 90 {
+            var last_status = devs.Vs(dev_id, "overall_status")
+            if dev_map.Vs(ip, "state") != "run" {
+              //ignore, dev is paused
+            } else {
+            //check if dev stopped updating data and we did not alerted yet
+            var cur_state string
+            if devs.Vi
+          }
+        }
+
+        globalMutex.Unlock()
+      }
       //restart main loop
       continue MAIN_LOOP
     }

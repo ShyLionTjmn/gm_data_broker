@@ -79,6 +79,9 @@ func (l *Logger) Event(f ... string) { // "event", key|"", "attr", value, "attr"
   if err == nil {
     if l.Conn != nil && l.Conn.Err() == nil {
       l.Conn.Do("LPUSH", "log."+l.Dev, j)
+      if opt_v > 1 {
+        color.Magenta("Log: %s, %s", l.Dev, j)
+      }
     }
   }
 }
@@ -123,6 +126,10 @@ func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) {
   if err == nil {
     if a.Conn != nil && a.Conn.Err() == nil {
       a.Conn.Do("LPUSH", "alert", j)
+
+      if opt_v > 1 {
+        color.Magenta("Alert: %s", j)
+      }
 
       if key == "overall_status" {
         a.Conn.Do("SET", "status_alert."+new.Vs("id"), strconv.FormatInt(time.Now().Unix(), 10)+";"+new.Vs("data_ip")+";"+new.Vs("overall_status"))
@@ -302,7 +309,19 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   }()
 
   var dev_list_state string
-  dev_list_state, err = redis.String(red.Do("HGET", "dev_list", ip))
+  var dev_list_state_str string
+  dev_list_state_str, err = redis.String(red.Do("HGET", "dev_list", ip))
+  if err == nil {
+    err = redis.ErrNil
+    a := strings.Split(dev_list_state_str, ":")
+    if len(a) == 2 && a[1] != "ignore" {
+      t, _err = strconv.ParseInt(a[0], 10, 64)
+      if _err == nil && t <= time.Now().Unix() {
+        dev_list_state = a[1]
+        err = nil
+      }
+    }
+  }
   if err != nil {
     if err == redis.ErrNil && !startup {
       //device removed from dev_list, just cleanup and return
@@ -392,6 +411,9 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   err = device.Decode(raw)
   if err != nil { return }
 
+  now_unix := time.Now().Unix()
+  now_unix_str := strconv.FormatInt(now_unix, 10)
+
   dev := device.Dev
 
   if !dev.Evs("id") {
@@ -439,11 +461,11 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   }
 
   dev["last_seen"] = last_seen
-
+/*
   if (time.Now().Unix() - last_seen) > WARN_AGE && overall_status == "ok" {
     overall_status = "warn"
   }
-
+*/
   dev["overall_status"] = overall_status
 
   dev_id := dev.Vs("id")
@@ -483,11 +505,11 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       wipe_dev(dev_id)
       ip_err := fmt.Sprintf("%d:%s ! %s", time.Now().Unix(), time.Now().Format("2006 Jan 2 15:04:05"), "Pausing due to conflict with running device "+ip)
       red.Do("SET", "ip_proc_error."+conflict_ip, ip_err)
-      red.Do("HSET", "dev_list", conflict_ip, "conflict")
+      red.Do("HSET", "dev_list", conflict_ip, now_unix_str+":conflict")
 
     } else if devs.Vs(dev_id, "overall_status") == "ok" && overall_status != "ok" {
       // this device is old or paused, ignore data
-      red.Do("HSET", "dev_list", ip, "conflict")
+      red.Do("HSET", "dev_list", ip, now_unix_str+":conflict")
       err = errors.New("Conflict with running dev "+conflict_ip+". Pausing. Prev status was: "+overall_status)
       data.VM("dev_list", ip)["state"] = "conflict"
       return
@@ -498,10 +520,10 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
         wipe_dev(dev_id)
         ip_err := fmt.Sprintf("%d:%s ! %s", time.Now().Unix(), time.Now().Format("2006 Jan 2 15:04:05"), "Pausing due to conflict with more recent device "+ip)
         red.Do("SET", "ip_proc_error."+conflict_ip, ip_err)
-        red.Do("HSET", "dev_list", conflict_ip, "conflict")
+        red.Do("HSET", "dev_list", conflict_ip, now_unix_str+":conflict")
       } else {
         //this dev data is older
-        red.Do("HSET", "dev_list", ip, "conflict")
+        red.Do("HSET", "dev_list", ip, now_unix_str+":conflict")
         err = errors.New("Conflict with more recent dev "+conflict_ip+". Pausing. Prev status was: "+overall_status)
         data.VM("dev_list", ip)["state"] = "conflict"
         return
@@ -862,7 +884,6 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     }
   }
 
-  now_unix := time.Now().Unix()
 
   if dev.EvM("interfaces") {
     for ifName, if_m := range dev.VM("interfaces") {
