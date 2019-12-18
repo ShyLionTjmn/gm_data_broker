@@ -59,6 +59,7 @@ var dev_refs = make(M) // device references for faster lookups
 var opt_Q bool
 var opt_1 bool
 var opt_v int
+var opt_l bool
 
 const TRY_OPEN_FILES uint64=65536
 var max_open_files uint64
@@ -76,6 +77,7 @@ func init() {
 
   flag.BoolVar(&opt_Q, "Q", false, "ignore queue saves from gomapper")
   flag.BoolVar(&opt_1, "1", false, "startup and finish")
+  flag.BoolVar(&opt_l, "l", false, "log link discovery and change")
   flag.IntVar(&opt_v, "v", 0, "set verbosity level")
 
   flag.Parse()
@@ -415,6 +417,9 @@ MAIN_LOOP:
       continue MAIN_LOOP
     case <- main_timer.C:
       if redis_loaded && red != nil && red.Err() == nil {
+        if opt_v > 2 {
+          fmt.Println("main timer: cleanup and status check")
+        }
         var dev_map M
         dev_map, err = read_devlist(red)
         if err != nil {
@@ -446,6 +451,10 @@ MAIN_LOOP:
           if _, ok := dev_map[ip]; !ok {
             //no such ip in redis dev_list
             if dev_id, ok := data.Vse("dev_list", ip, "id"); ok {
+
+              if opt_v > 1 {
+                fmt.Println("main timer: wipe dev:", dev_id, "ip:", ip)
+              }
               wipe_dev(dev_id)
             }
             delete(data.VM("dev_list"), ip)
@@ -458,16 +467,44 @@ MAIN_LOOP:
           ip := devs.Vs(dev_id, "data_ip")
           //check if dev ip is not in lists
           if _, ok := dev_map[ip]; !ok || !data.EvM("dev_list", ip) {
+            if opt_v > 1 {
+              fmt.Println("main timer: wipe dev:", dev_id, "ip:", ip)
+            }
             wipe_dev(dev_id)
             delete(data.VM("dev_list"), ip)
-          } else if gomapper_run > 90 && (now_unix - devs.Vi(dev_id, "time")) > WARN_AGE && (now_unix - dev_map.Vi(ip, "time")) > 90 {
-            var last_status = devs.Vs(dev_id, "overall_status")
-            if dev_map.Vs(ip, "state") != "run" {
-              //ignore, dev is paused
-            } else {
-            //check if dev stopped updating data and we did not alerted yet
-            var cur_state string
-            if devs.Vi
+          } else {
+            /*if opt_v > 2 {
+              fmt.Println("main timer: status check:", dev_id, "ip:", ip)
+              fmt.Println("\tgomapper_run:", gomapper_run)
+              fmt.Println("\tdev time age:", now_unix - devs.Vi(dev_id, "last_seen"))
+              fmt.Println("\tdev_list time age:", now_unix - dev_map.Vi(ip, "time"))
+              fmt.Println("\tdev_list state:", dev_map.Vs(ip, "state"))
+            }*/
+            if gomapper_run > 90 && (now_unix - devs.Vi(dev_id, "last_seen")) > WARN_AGE &&
+                    (now_unix - dev_map.Vi(ip, "time")) > 90 && dev_map.Vs(ip, "state") == "run" {
+              // if
+              //var last_status = devs.Vs(dev_id, "overall_status")
+              var new_status string="warn"
+              if (now_unix - devs.Vi(dev_id, "last_seen")) > DEAD_AGE {
+                new_status = "error"
+              }
+
+              last_alert_status, _ := devs.Vse(dev_id, "_status_alerted_value")
+              if last_alert_status != new_status {
+                devs.VM(dev_id)["overall_status"] = new_status
+                alerter := &Alerter{Conn: red}
+                logger := &Logger{Conn: red, Dev: dev_id}
+
+                alerter.Alert(devs.VM(dev_id), last_alert_status, "", "overall_status")
+                logger.Event("key_change", "overall_status", "old_value", last_alert_status, "new_value", new_status)
+
+                devs.VM(dev_id)["_status_alerted_value"] = new_status
+                devs.VM(dev_id)["_status_alerted_time"] = now_unix
+
+                alerter.Save()
+                logger.Save()
+              }
+            }
           }
         }
 

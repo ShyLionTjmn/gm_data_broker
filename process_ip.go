@@ -315,7 +315,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     err = redis.ErrNil
     a := strings.Split(dev_list_state_str, ":")
     if len(a) == 2 && a[1] != "ignore" {
-      t, _err = strconv.ParseInt(a[0], 10, 64)
+      t, _err := strconv.ParseInt(a[0], 10, 64)
       if _err == nil && t <= time.Now().Unix() {
         dev_list_state = a[1]
         err = nil
@@ -335,11 +335,11 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
       //find dev id by data_ip
 
-      log := &Logger{Conn: red}
+      log := &Logger{Conn: red, Dev: "nodev"}
 
       for dev_id, dev_m := range devs {
         if dev_m.(M).Vs("data_ip") == ip {
-          log.Event(dev_id, "dev_purged", "", "ip", ip)
+          log.Event("dev_purged", "", "ip", ip)
           wipe_dev(dev_id)
           if opt_v > 0 {
             color.Yellow("Dev purged: %s, %s", dev_id, ip)
@@ -595,7 +595,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
                     matrix_h["_complete"] = int64(1)
                     matrix_h["status"] = int64(1)
                     check_matrix[matrix_id] = rdevid
-                    if opt_v > 1 {
+                    if opt_l {
                       if prev_complete == 1 {
                         color.HiBlack("link updateed by meeting: %s", matrix_h.Vs("link_id"))
                       } else {
@@ -659,7 +659,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
                 matrix_h["status"] = int64(1)
                 matrix_h["_complete"] = int64(1)
                 check_matrix[norm_matrix_id] = dev_id
-                if opt_v > 1 {
+                if opt_l {
                   if pass == 0 {
                     color.Green("link established by creator: %s", matrix_h.Vs("link_id"))
                   } else {
@@ -747,12 +747,12 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
           if keep_link {
             link_list = append(link_list, link_id)
             if went_down {
-              if opt_v > 1 {
+              if opt_l {
                 color.Magenta("link down: %s", link_id)
               }
             }
           } else {
-            if opt_v > 1 {
+            if opt_l {
               color.Cyan("link gone: %s", link_id)
             }
             if link_h != nil {
@@ -968,7 +968,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       if old.Vs("overall_status") != dev.Vs("overall_status") || (status_alerted_value != "" && status_alerted_value != dev.Vs("overall_status")) {
         status_alerted_value = dev.Vs("overall_status")
         status_alerted_time = time.Now().Unix()
-        alerter.Alert(dev, old, "", "overall_status")
+        alerter.Alert(dev, old.Vs("overall_status"), "", "overall_status")
         logger.Event("key_change", "overall_status", "old_value", old.Vs("overall_status"), "new_value", dev.Vs("overall_status"))
       }
 
@@ -1112,7 +1112,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
               nei := nei_i.(string)
               if !old_pn.EvA(key) {
                 attrs := make([]string, 0)
-                attrs = append(attrs, dev_id, "lldp_port_nei_new", port_index)
+                attrs = append(attrs, "lldp_port_nei_new", port_index)
                 for _, subkey := range lldpKeySet {
                   if dev.EvA("lldp_ports", port_index, "neighbours", nei, subkey) {
                     attrs = append(attrs, subkey, dev.Vs("lldp_ports", port_index, "neighbours", nei, subkey))
@@ -1125,7 +1125,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
               nei := nei_i.(string)
               if !old_pn.EvA(key) {
                 attrs := make([]string, 0)
-                attrs = append(attrs, dev_id, "lldp_port_nei_gone", port_index)
+                attrs = append(attrs, "lldp_port_nei_gone", port_index)
                 for _, subkey := range lldpKeySet {
                   if old.EvA("lldp_ports", port_index, "neighbours", nei, subkey) {
                     attrs = append(attrs, subkey, old.Vs("lldp_ports", port_index, "neighbours", nei, subkey))
