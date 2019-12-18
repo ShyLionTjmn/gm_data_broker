@@ -25,7 +25,9 @@ import (
   "github.com/fatih/color"
 
   . "github.com/ShyLionTjmn/aux"
+  . "github.com/ShyLionTjmn/gomapper_aux"
   "github.com/ShyLionTjmn/redsub"
+  "github.com/ShyLionTjmn/redmutex"
 
 )
 
@@ -463,7 +465,7 @@ MAIN_LOOP:
 
         now_unix := time.Now().Unix()
 
-        for dev_id, _ := range devs {
+L466:   for dev_id, _ := range devs {
           ip := devs.Vs(dev_id, "data_ip")
           //check if dev ip is not in lists
           if _, ok := dev_map[ip]; !ok || !data.EvM("dev_list", ip) {
@@ -491,15 +493,60 @@ MAIN_LOOP:
 
               last_alert_status, _ := devs.Vse(dev_id, "_status_alerted_value")
               if last_alert_status != new_status {
+
+                redm := redmutex.New(fmt.Sprintf("ip_lock.%s", ip))
+                err = redm.Lock(red, time.Second, 10*time.Second)
+                if err != nil { continue L466 }
+
+
+                var queues_map map[string]string
+                queues_map, err = redis.StringMap(red.Do("HGETALL", "ip_queues."+ip))
+                if err != nil {
+                  redm.Unlock(red)
+                  continue L466
+                }
+
+                last_error := ""
+
+                for q, _ := range queues_map {
+                  var lr string
+                  lr, err = redis.String(red.Do("GET", "ip_last_result."+q+"."+ip))
+                  if err != nil {
+                    redm.Unlock(red)
+                    continue L466
+                  }
+
+                  var res string
+                  var queue_error string
+
+                  res, _, _, queue_error, err = LastResultDecode(lr)
+                  if err != nil {
+                    redm.Unlock(red)
+                    continue L466
+                  }
+
+                  if res != "ok" {
+                    if last_error == "" {
+                      last_error = queue_error
+                    } else if strings.Index(last_error, queue_error) < 0 {
+                      last_error += ", "+queue_error
+                    }
+                  }
+                }
+                redm.Unlock(red)
+
                 devs.VM(dev_id)["overall_status"] = new_status
+                devs.VM(dev_id)["last_error"] = last_error
+
                 alerter := &Alerter{Conn: red}
                 logger := &Logger{Conn: red, Dev: dev_id}
 
-                alerter.Alert(devs.VM(dev_id), last_alert_status, "", "overall_status")
                 logger.Event("key_change", "overall_status", "old_value", last_alert_status, "new_value", new_status)
 
-                devs.VM(dev_id)["_status_alerted_value"] = new_status
-                devs.VM(dev_id)["_status_alerted_time"] = now_unix
+                if alerter.Alert(devs.VM(dev_id), last_alert_status, "", "overall_status") {
+                  devs.VM(dev_id)["_status_alerted_value"] = new_status
+                  devs.VM(dev_id)["_status_alerted_time"] = now_unix
+                }
 
                 alerter.Save()
                 logger.Save()

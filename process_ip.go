@@ -20,6 +20,7 @@ import (
 
   . "github.com/ShyLionTjmn/aux"
   . "github.com/ShyLionTjmn/decode_dev"
+  . "github.com/ShyLionTjmn/gomapper_aux"
 
 )
 
@@ -97,7 +98,8 @@ type Alerter struct {
   Conn          redis.Conn
 }
 
-func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) {
+func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) (success bool) {
+  success = false
   m := make(M)
 
   m["id"] = new.Vs("id")
@@ -125,17 +127,22 @@ func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) {
   j, err := json.Marshal(m)
   if err == nil {
     if a.Conn != nil && a.Conn.Err() == nil {
-      a.Conn.Do("LPUSH", "alert", j)
+      if _, err = a.Conn.Do("LPUSH", "alert", j); err == nil {
+        success = true
+      }
 
       if opt_v > 1 {
         color.Magenta("Alert: %s", j)
       }
 
-      if key == "overall_status" {
-        a.Conn.Do("SET", "status_alert."+new.Vs("id"), strconv.FormatInt(time.Now().Unix(), 10)+";"+new.Vs("data_ip")+";"+new.Vs("overall_status"))
+      if key == "overall_status" && success {
+        if _, err = a.Conn.Do("SET", "status_alert."+new.Vs("id"), strconv.FormatInt(time.Now().Unix(), 10)+";"+new.Vs("data_ip")+";"+new.Vs("overall_status")); err != nil {
+          success = false
+        }
       }
     }
   }
+  return
 }
 
 func (a *Alerter) Save() {
@@ -430,11 +437,16 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   if opt_v > 1 {
     fmt.Println("Process:", ip)
   }
-  last_seen := int64(0)
+
+  save_time := int64(0)
+  last_error := ""
   overall_status := "ok"
+
   if dev_list_state != "run" {
     overall_status = "paused"
   }
+
+  has_errors := false
 
   for _, q := range queue_list.([]string) {
     if !dev.Evs("_last_result", q) {
@@ -443,30 +455,42 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     }
 
     lr := dev.Vs("_last_result", q)
-    if strings.Index(lr, "ok:") != 0 {
+
+    var res string
+    var queue_save_time int64
+    var queue_error string
+
+    res, _, queue_save_time, queue_error, err = LastResultDecode(lr)
+    if err != nil { return }
+    if res != "ok" {
+      has_errors = true
       if overall_status == "ok" {
         overall_status = "error"
       }
-    } else {
-      a := strings.Split(lr, ":")
-      if len(a) != 3 || !IsNumber(a[2]) {
-        err = errors.New("Bad last_result format for queue "+q)
-        return
+      if last_error == "" {
+        last_error = queue_error
+      } else if strings.Index(last_error, queue_error) < 0 {
+        last_error += ", "+queue_error
       }
-      queue_save_time, _ := strconv.ParseInt(a[2], 10, 64)
-      if queue_save_time > last_seen {
-        last_seen = queue_save_time
+    } else {
+      if queue_save_time > save_time {
+        save_time = queue_save_time
       }
     }
   }
 
-  dev["last_seen"] = last_seen
+  if has_errors {
+    save_time = 0
+  }
+
 /*
   if (time.Now().Unix() - last_seen) > WARN_AGE && overall_status == "ok" {
     overall_status = "warn"
   }
 */
   dev["overall_status"] = overall_status
+  dev["last_error"] = last_error
+  dev["save_time"] = save_time
 
   dev_id := dev.Vs("id")
 
@@ -514,8 +538,8 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       data.VM("dev_list", ip)["state"] = "conflict"
       return
     } else {
-      //both good or both bad. compare last_seen
-      if last_seen > devs.Vi(dev_id, "last_seen") {
+      //both good or both bad. compare save_time
+      if save_time > devs.Vi(dev_id, "save_time") {
         //this dev is more recent
         wipe_dev(dev_id)
         ip_err := fmt.Sprintf("%d:%s ! %s", time.Now().Unix(), time.Now().Format("2006 Jan 2 15:04:05"), "Pausing due to conflict with more recent device "+ip)
@@ -531,6 +555,8 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     }
   }
 
+  var last_seen int64
+
   //check for id change
   if prev_id, ok := data.Vse("dev_list", ip , "id"); ok && prev_id != dev_id {
     wipe_dev(prev_id)
@@ -539,8 +565,28 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     }
   } else {
     data.VM("dev_list", ip)["id"] = dev_id
+
+    var redstr string
+    redstr, err = redis.String(red.Do("GET", "dev_last_seen."+dev_id))
+    if err != nil && err != redis.ErrNil { return }
+    if err == nil {
+      i, s, _err := IntSepStrErr(redstr, ":")
+      if _err == nil && s == ip {
+        last_seen = i
+      }
+    }
   }
 
+  if last_seen < save_time {
+    last_seen = save_time
+  }
+
+  if overall_status == "error" && (now_unix - last_seen) < DEAD_AGE {
+    overall_status = "warn"
+    dev["overall_status"] = overall_status
+  }
+
+  dev["last_seen"] = last_seen
   // process links
   check_matrix := make(M)
 
@@ -965,10 +1011,14 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     } else {
       // check what's changed
 
-      if old.Vs("overall_status") != dev.Vs("overall_status") || (status_alerted_value != "" && status_alerted_value != dev.Vs("overall_status")) {
-        status_alerted_value = dev.Vs("overall_status")
-        status_alerted_time = time.Now().Unix()
-        alerter.Alert(dev, old.Vs("overall_status"), "", "overall_status")
+      if status_alerted_value != dev.Vs("overall_status") {
+        if alerter.Alert(dev, status_alerted_value, "", "overall_status") {
+          status_alerted_value = dev.Vs("overall_status")
+          status_alerted_time = time.Now().Unix()
+        }
+      }
+
+      if old.Vs("overall_status") != dev.Vs("overall_status") {
         logger.Event("key_change", "overall_status", "old_value", old.Vs("overall_status"), "new_value", dev.Vs("overall_status"))
       }
 
@@ -1152,4 +1202,6 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
   data.VM("dev_list", ip)["proc_result"] = "done in "+strconv.FormatInt(int64(proc_time/time.Millisecond), 10)+" ms"
   data.VM("dev_list", ip)["time"] = time.Now().Unix()
+
+  red.Do("SET", "dev_last_seen."+dev_id, strconv.FormatInt(last_seen, 10)+":"+ip)
 }
