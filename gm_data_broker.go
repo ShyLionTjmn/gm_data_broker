@@ -354,7 +354,7 @@ MAIN_LOOP:
         fast_start := max_open_files > total_ips+20
         var wg_ sync.WaitGroup
         for ip, _ := range dev_map {
-          if ip_reg.MatchString(ip) {
+          if ip_reg.MatchString(ip) && dev_map.Vs(ip, "state") != "conflict" {
             if opt_v > 1 {
               fmt.Println("Load IP", ip)
             }

@@ -519,6 +519,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   defer globalMutex.Unlock()
 
   if devs.EvM(dev_id) && devs.Vs(dev_id, "data_ip") != ip {
+    logger := &Logger{Conn: red, Dev: "nodev"}
     if opt_v > 0 {
       color.Red("CONFLICT: %s vs %s", devs.Vs(dev_id, "data_ip"), ip)
     }
@@ -531,11 +532,16 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       red.Do("SET", "ip_proc_error."+conflict_ip, ip_err)
       red.Do("HSET", "dev_list", conflict_ip, now_unix_str+":conflict")
 
+      logger.Event("conflict", "", "conflict_id", dev_id, "paused_ip", conflict_ip, "working_ip", ip)
+      logger.Save()
+
     } else if devs.Vs(dev_id, "overall_status") == "ok" && overall_status != "ok" {
       // this device is old or paused, ignore data
       red.Do("HSET", "dev_list", ip, now_unix_str+":conflict")
       err = errors.New("Conflict with running dev "+conflict_ip+". Pausing. Prev status was: "+overall_status)
       data.VM("dev_list", ip)["state"] = "conflict"
+      logger.Event("conflict", "", "conflict_id", dev_id, "paused_ip", ip, "working_ip", conflict_ip)
+      logger.Save()
       return
     } else {
       //both good or both bad. compare save_time
@@ -545,11 +551,15 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
         ip_err := fmt.Sprintf("%d:%s ! %s", time.Now().Unix(), time.Now().Format("2006 Jan 2 15:04:05"), "Pausing due to conflict with more recent device "+ip)
         red.Do("SET", "ip_proc_error."+conflict_ip, ip_err)
         red.Do("HSET", "dev_list", conflict_ip, now_unix_str+":conflict")
+        logger.Event("conflict", "", "conflict_id", dev_id, "paused_ip", conflict_ip, "working_ip", ip)
+        logger.Save()
       } else {
         //this dev data is older
         red.Do("HSET", "dev_list", ip, now_unix_str+":conflict")
         err = errors.New("Conflict with more recent dev "+conflict_ip+". Pausing. Prev status was: "+overall_status)
         data.VM("dev_list", ip)["state"] = "conflict"
+        logger.Event("conflict", "", "conflict_id", dev_id, "paused_ip", ip, "working_ip", conflict_ip)
+        logger.Save()
         return
       }
     }
@@ -560,6 +570,9 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   //check for id change
   if prev_id, ok := data.Vse("dev_list", ip , "id"); ok && prev_id != dev_id {
     wipe_dev(prev_id)
+    logger := &Logger{Conn: red, Dev: "nodev"}
+    logger.Event("dev_id_change", "", "prev_id", prev_id, "new_id", dev_id, "ip", ip)
+    logger.Save()
     if opt_v > 0 {
       color.Yellow("Dev id changed. Previous data purged: %s, %s", prev_id, ip)
     }
@@ -1001,16 +1014,18 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     dev["_status_alerted_time"] = status_alerted_time
     devs[dev_id] = dev
   } else {
-    logger := &Logger{Conn: red, Dev: dev_id}
-    alerter := &Alerter{Conn: red}
-
     if old, ok := devs.VMe(dev_id); !ok {
+      logger := &Logger{Conn: red, Dev: "nodev"}
       devs[dev_id] = dev
       location, _ := dev.Vse("sysLocation")
       logger.Event("dev_new", "", "ip", ip, "short_name", dev.Vs("short_name"), "loc", location)
+      logger.Save()
     } else {
-      // check what's changed
+      logger := &Logger{Conn: red, Dev: dev_id}
+      alerter := &Alerter{Conn: red}
 
+      // check what's changed
+//fmt.Println(w.WhereAmI(), dev.Vs("overall_status"))
       if status_alerted_value != dev.Vs("overall_status") {
         if alerter.Alert(dev, status_alerted_value, "", "overall_status") {
           status_alerted_value = dev.Vs("overall_status")
@@ -1192,10 +1207,10 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       dev["_status_alerted_time"] = status_alerted_time
 
       devs[dev_id] = dev
+      logger.Save()
+      alerter.Save()
     }
 
-    logger.Save()
-    alerter.Save()
   }
 
   proc_time := time.Now().Sub(process_start)
