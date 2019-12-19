@@ -57,6 +57,9 @@ var devs_arp = make(M)
 var data = make(M)
 var l2Matrix = make(M) // working map with alternatives
 var dev_refs = make(M) // device references for faster lookups
+var graph_int_rules string
+var graph_int_watch_dev []string={}
+var graph_int_watch_int []string={}
 
 var opt_Q bool
 var opt_1 bool
@@ -129,6 +132,37 @@ func read_devlist (red redis.Conn) (M, error) {
   }
 
   return ret, nil
+}
+
+var graphDevKey_regex *regexp.Regexp
+var graphIntKey_regex *regexp.Regexp
+var graphDevNeKey_regex *regexp.Regexp
+var graphIntNeKey_regex *regexp.Regexp
+
+func init() {
+  graphDevKey_regex = regexp.MustCompile(`^dev\.([0-9a-zA-Z_]+) *(==|=~|!=|!~) *([^ ])`)
+  graphIntKey_regex = regexp.MustCompile(`^int\.([0-9a-zA-Z_]+) *(==|=~|!=|!~) *([^ ])`)
+  graphDevNeKey_regex = regexp.MustCompile(`^not_empty +dev\.([0-9a-zA-Z_]+)(?:$|\s)`)
+  graphIntNeKey_regex = regexp.MustCompile(`^not_empty +int\.([0-9a-zA-Z_]+)(?:$|\s)`)
+}
+
+
+func parseGraphIntRules(s string) ([]string, []string, error) {
+  s_pos := 0
+  ret_d := make([]string, 0)
+  ret_i := make([]string, 0)
+
+  par_open := 0
+
+  for s_pos < len(s) {
+    for s_pos < len(s) && s[s_pos] == ' ' || s[s_pos] == '\n' || s[s_pos] == '\t' { s_pos++ }
+    if s_pos == len(s) {
+      if par_open == 0 {
+        return ret_d, ret_i, nil
+      } else {
+        return nil, nil, errors.New("No closing parenthesis")
+      }
+    }
 }
 
 
@@ -344,6 +378,25 @@ MAIN_LOOP:
     red, err = RedisCheck(red, "unix", REDIS_SOCKET, red_db)
 
     redState(red != nil && err == nil)
+
+    if red != nil {
+      var redstr string
+      redstr, err = redis.String(red.Do("GET", "graph_int_rules"))
+      if err == nil {
+        globalMutex.Lock()
+        if redstr != graph_int_rules {
+          if d, i, _err := parseGraphIntRules(redstr); err == nil {
+            graph_int_rules = redstr
+            graph_int_watch_dev = d
+            graph_int_watch_int = i
+          } else {
+            if opt_v > 1 {
+              color.Red("Error parsing graph_int_rules: %s", _err.Error())
+            }
+          }
+        }
+      }
+    }
 
     if !redis_loaded && red != nil {
       var dev_map M
