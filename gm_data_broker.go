@@ -140,10 +140,10 @@ var graphDevNeKey_regex *regexp.Regexp
 var graphIntNeKey_regex *regexp.Regexp
 
 func init() {
-  graphDevKey_regex = regexp.MustCompile(`^dev\.([0-9a-zA-Z_]+) *(==|=~|!=|!~) *([^ ])`)
-  graphIntKey_regex = regexp.MustCompile(`^int\.([0-9a-zA-Z_]+) *(==|=~|!=|!~) *([^ ])`)
-  graphDevNeKey_regex = regexp.MustCompile(`^not_empty +dev\.([0-9a-zA-Z_]+)(?:$|\s)`)
-  graphIntNeKey_regex = regexp.MustCompile(`^not_empty +int\.([0-9a-zA-Z_]+)(?:$|\s)`)
+  graphDevKey_regex = regexp.MustCompile(`^dev\.([0-9a-zA-Z_]+)[ \t]*(==|=~|!=|!~)[ \t]*([^\s])`)
+  graphIntKey_regex = regexp.MustCompile(`^int\.([0-9a-zA-Z_]+)[ \t]*(==|=~|!=|!~)[ \t]*([^\s])`)
+  graphDevNeKey_regex = regexp.MustCompile(`^not_empty +dev\.([0-9a-zA-Z_]+)\s*($|[^\s])`)
+  graphIntNeKey_regex = regexp.MustCompile(`^not_empty +int\.([0-9a-zA-Z_]+)\s*($|[^\s])`)
 }
 
 
@@ -163,6 +163,61 @@ func parseGraphIntRules(s string) ([]string, []string, error) {
         return nil, nil, errors.New("No closing parenthesis")
       }
     }
+    op := ""
+    if m := graphDevKey_regex.FindStringSubmatchIndex(s[s_pos:]); m != nil {
+      ret_d = append(ret_d, s[s_pos+m[2]:s_pos+m[3]])
+      op = s[s_pos+m[4]:s_pos+m[5]]
+      s_pos += m[6] //at least 1 symbol left in string
+    } else if m := graphIntKey_regex.FindStringSubmatchIndex(s[s_pos:]); m != nil {
+      ret_i = append(ret_d, s[s_pos+m[2]:s_pos+m[3]])
+      op = s[s_pos+m[4]:s_pos+m[5]]
+      s_pos += m[6] //at least 1 symbol left in string
+    } else if m := graphDevNeKey_regex.FindStringSubmatchIndex(s[s_pos:]); m != nil {
+      ret_d = append(ret_d, s[s_pos+m[2]:s_pos+m[3]])
+      op = "not_empty"
+      s_pos += m[4] //at first non space char or at the end of script
+    } else if m := graphIntNeKey_regex.FindStringSubmatchIndex(s[s_pos:]); m != nil {
+      ret_i = append(ret_d, s[s_pos+m[2]:s_pos+m[3]])
+      op = "not_empty"
+      s_pos += m[4] //at first non space char or at the end of script
+    } else if s[s_pos] == '(' {
+      par_open++
+      s_pos++
+    } else {
+      return nil, nil, errors.New("Syntax error: unexpected expression at "+strconv.Itoa(s_pos))
+    }
+
+    if op == "==" || op == "!=" {
+      if s[s_pos] != '"' {
+        for s_pos < len(s) && s[s_pos] != ' ' && s[s_pos] != '\t' && s[s_pos] != '\n' { s_pos++ }
+      } else {
+        quote_closed := false
+        s_pos++
+        for s_pos < len(s) {
+          if s[s_pos] == '\\' && (s_pos+1) < len(s) && (s[s_pos+1] == '\\' || s[s_pos+1] == '"') {
+            s_pos += 2
+          } else if s[s_pos] == '"' {
+            s_pos++
+            quote_closed = true
+            if s_pos < len(s) && s[s_pos] != '\n' && s[s_pos] != ' ' && s[s_pos] != '\t' {
+              return nil, nil, errors.New("Syntax error: trailing symbols after quote at "+strconv.Itoa(s_pos))
+            }
+            break
+          } else if s[s_pos] == '\n' {
+            return nil, nil, errors.New("Syntax error: unclosed quote at "+strconv.Itoa(s_pos))
+          } else {
+            s_pos++
+          }
+        }
+      }
+    } else if op == "=~" || op == "!~" {
+      if s[s_pos] != '/' {
+        return nil, nil, errors.New("Syntax error: no regex opening symbol \"/\" at "+strconv.Itoa(s_pos))
+      }
+      s_pos++
+      if len
+    }
+  }
 }
 
 
