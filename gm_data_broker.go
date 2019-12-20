@@ -58,8 +58,11 @@ var data = make(M)
 var l2Matrix = make(M) // working map with alternatives
 var dev_refs = make(M) // device references for faster lookups
 var graph_int_rules string
-var graph_int_watch_dev []string={}
-var graph_int_watch_int []string={}
+var graph_int_rules_time int64
+var graph_int_watch_dev []string
+var graph_int_watch_int []string
+var graph_int_watch_dev_ne []string
+var graph_int_watch_int_ne []string
 
 var opt_Q bool
 var opt_1 bool
@@ -133,157 +136,6 @@ func read_devlist (red redis.Conn) (M, error) {
 
   return ret, nil
 }
-
-var graphDevKey_regex *regexp.Regexp
-var graphIntKey_regex *regexp.Regexp
-var graphDevNeKey_regex *regexp.Regexp
-var graphIntNeKey_regex *regexp.Regexp
-
-func init() {
-  graphDevKey_regex = regexp.MustCompile(`^dev\.([0-9a-zA-Z_]+)[ \t]*(==|=~|!=|!~)[ \t]*([^\s])`)
-  graphIntKey_regex = regexp.MustCompile(`^int\.([0-9a-zA-Z_]+)[ \t]*(==|=~|!=|!~)[ \t]*([^\s])`)
-  graphDevNeKey_regex = regexp.MustCompile(`^not_empty +dev\.([0-9a-zA-Z_]+)\s*($|[^\s])`)
-  graphIntNeKey_regex = regexp.MustCompile(`^not_empty +int\.([0-9a-zA-Z_]+)\s*($|[^\s])`)
-}
-
-
-func parseGraphIntRules(s string) ([]string, []string, error) {
-  s_pos := 0
-  ret_d := make([]string, 0)
-  ret_i := make([]string, 0)
-
-  par_open := 0
-  and_or_started := false
-
-L1:for s_pos < len(s) {
-    for s_pos < len(s) && s[s_pos] == ' ' || s[s_pos] == '\n' || s[s_pos] == '\t' { s_pos++ }
-    if s_pos == len(s) {
-      if par_open != 0 {
-        return nil, nil, errors.New("No closing parenthesis")
-      }
-      if and_or_started {
-        return nil, nil, errors.New("No next expression after logical operator")
-      }
-      return ret_d, ret_i, nil
-    }
-    and_or_started = false
-    op := ""
-    if m := graphDevKey_regex.FindStringSubmatchIndex(s[s_pos:]); m != nil {
-      ret_d = append(ret_d, s[s_pos+m[2]:s_pos+m[3]])
-      op = s[s_pos+m[4]:s_pos+m[5]]
-      s_pos += m[6] //at least 1 symbol left in string
-    } else if m := graphIntKey_regex.FindStringSubmatchIndex(s[s_pos:]); m != nil {
-      ret_i = append(ret_d, s[s_pos+m[2]:s_pos+m[3]])
-      op = s[s_pos+m[4]:s_pos+m[5]]
-      s_pos += m[6] //at least 1 symbol left in string
-    } else if m := graphDevNeKey_regex.FindStringSubmatchIndex(s[s_pos:]); m != nil {
-      ret_d = append(ret_d, s[s_pos+m[2]:s_pos+m[3]])
-      op = "not_empty"
-      s_pos += m[4] //at first non space char or at the end of script
-    } else if m := graphIntNeKey_regex.FindStringSubmatchIndex(s[s_pos:]); m != nil {
-      ret_i = append(ret_d, s[s_pos+m[2]:s_pos+m[3]])
-      op = "not_empty"
-      s_pos += m[4] //at first non space char or at the end of script
-    } else if s[s_pos] == '(' {
-      par_open++
-      s_pos++
-      continue L1
-    } else {
-      return nil, nil, errors.New("Syntax error: unexpected expression at "+strconv.Itoa(s_pos))
-    }
-
-    if op == "==" || op == "!=" {
-      if s[s_pos] != '"' {
-        for s_pos < len(s) && s[s_pos] != ' ' && s[s_pos] != '\t' && s[s_pos] != '\n' { s_pos++ }
-      } else {
-        quote_closed := false
-        s_pos++
-        for s_pos < len(s) {
-          if s[s_pos] == '\\' && (s_pos+1) < len(s) && (s[s_pos+1] == '\\' || s[s_pos+1] == '"') {
-            s_pos += 2
-          } else if s[s_pos] == '"' {
-            s_pos++
-            quote_closed = true
-            if s_pos < len(s) && s[s_pos] != '\n' && s[s_pos] != ' ' && s[s_pos] != '\t' {
-              return nil, nil, errors.New("Syntax error: trailing symbols after quote at "+strconv.Itoa(s_pos))
-            }
-            break
-          } else if s[s_pos] == '\n' {
-            return nil, nil, errors.New("Syntax error: unclosed quote on newline at "+strconv.Itoa(s_pos))
-          } else {
-            s_pos++
-          }
-        }
-        if !quote_closed {
-          return nil, nil, errors.New("Syntax error: unclosed quote at "+strconv.Itoa(s_pos))
-        }
-      }
-    } else if op == "=~" || op == "!~" {
-      if s[s_pos] != '/' {
-        return nil, nil, errors.New("Syntax error: no regex opening symbol \"/\" at "+strconv.Itoa(s_pos))
-      }
-      s_pos++
-      regex_start := s_pos
-      regex_closed := false
-      regex_pattern := ""
-      for s_pos < len(s) {
-        if s[s_pos] == '\\' && (s_pos+1) < len(s) && (s[s_pos+1] == '\\' || s[s_pos+1] == '/') {
-          regex_pattern += string(s[s_pos+1])
-          s_pos += 2
-        } else if s[s_pos] == '/' {
-          s_pos++
-          regex_closed = true
-          if s_pos < len(s) && s[s_pos] != '\n' && s[s_pos] != ' ' && s[s_pos] != '\t' {
-            return nil, nil, errors.New("Syntax error: trailing symbols after regex end at "+strconv.Itoa(s_pos))
-          }
-          break
-        } else if s[s_pos] == '\n' {
-          return nil, nil, errors.New("Syntax error: unclosed regex at "+strconv.Itoa(s_pos))
-        } else {
-          regex_pattern += string(s[s_pos])
-          s_pos++
-        }
-      }
-      if !regex_closed {
-        return nil, nil, errors.New("Syntax error: no regex closing at "+strconv.Itoa(s_pos))
-      }
-      if _, err := regexp.Compile(regex_pattern); err != nil {
-        return nil, nil, errors.New("Syntax error: regex compile error at "+strconv.Itoa(regex_start))
-      }
-    }
-
-    for s_pos < len(s) && s[s_pos] == ' ' || s[s_pos] == '\n' || s[s_pos] == '\t' { s_pos++ }
-    if s_pos == len(s) {
-      if par_open != 0 {
-        return nil, nil, errors.New("No closing parenthesis")
-      }
-      if and_or_started {
-        return nil, nil, errors.New("No next expression after logical operator")
-      }
-      return ret_d, ret_i, nil
-    }
-
-    if s[s_pos] == ')' {
-      if par_open == 0 {
-        return nil, nil, errors.New("No opening parenthesis for ) at "+strconv.Itoa(s_pos))
-      }
-      if and_or_started {
-        return nil, nil, errors.New("Syntax error: unexpected ) at "+strconv.Itoa(s_pos))
-      }
-      par_open--
-      s_pos ++
-    } else if strings.Index(s[s_spos:], "||") == 0 && strings.Index(s[s_spos:], "&&") == 0 {
-      if and_or_started {
-        return nil, nil, errors.New("Syntax error: unexpected logical operator at "+strconv.Itoa(s_pos))
-      } else {
-        and_or_started = true
-        s_pos += 2
-      }
-    }
-
-  }
-}
-
 
 func queue_data_sub(stop_ch chan string, wg *sync.WaitGroup) {
   //defer func() { r := recover(); if r != nil { fmt.Println("queue_data_sub: recover from:", r) } }()
@@ -504,16 +356,20 @@ MAIN_LOOP:
       if err == nil {
         globalMutex.Lock()
         if redstr != graph_int_rules {
-          if d, i, _err := parseGraphIntRules(redstr); err == nil {
+          if d, dne, i, ine, _err := ParseGraphIntRules(redstr); err == nil {
             graph_int_rules = redstr
+            graph_int_rules_time = time.Now().Unix()
             graph_int_watch_dev = d
             graph_int_watch_int = i
+            graph_int_watch_dev_ne = dne
+            graph_int_watch_int_ne = ine
           } else {
             if opt_v > 1 {
               color.Red("Error parsing graph_int_rules: %s", _err.Error())
             }
           }
         }
+        globalMutex.Unlock()
       }
     }
 
