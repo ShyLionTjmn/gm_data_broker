@@ -153,16 +153,20 @@ func parseGraphIntRules(s string) ([]string, []string, error) {
   ret_i := make([]string, 0)
 
   par_open := 0
+  and_or_started := false
 
-  for s_pos < len(s) {
+L1:for s_pos < len(s) {
     for s_pos < len(s) && s[s_pos] == ' ' || s[s_pos] == '\n' || s[s_pos] == '\t' { s_pos++ }
     if s_pos == len(s) {
-      if par_open == 0 {
-        return ret_d, ret_i, nil
-      } else {
+      if par_open != 0 {
         return nil, nil, errors.New("No closing parenthesis")
       }
+      if and_or_started {
+        return nil, nil, errors.New("No next expression after logical operator")
+      }
+      return ret_d, ret_i, nil
     }
+    and_or_started = false
     op := ""
     if m := graphDevKey_regex.FindStringSubmatchIndex(s[s_pos:]); m != nil {
       ret_d = append(ret_d, s[s_pos+m[2]:s_pos+m[3]])
@@ -183,6 +187,7 @@ func parseGraphIntRules(s string) ([]string, []string, error) {
     } else if s[s_pos] == '(' {
       par_open++
       s_pos++
+      continue L1
     } else {
       return nil, nil, errors.New("Syntax error: unexpected expression at "+strconv.Itoa(s_pos))
     }
@@ -204,10 +209,13 @@ func parseGraphIntRules(s string) ([]string, []string, error) {
             }
             break
           } else if s[s_pos] == '\n' {
-            return nil, nil, errors.New("Syntax error: unclosed quote at "+strconv.Itoa(s_pos))
+            return nil, nil, errors.New("Syntax error: unclosed quote on newline at "+strconv.Itoa(s_pos))
           } else {
             s_pos++
           }
+        }
+        if !quote_closed {
+          return nil, nil, errors.New("Syntax error: unclosed quote at "+strconv.Itoa(s_pos))
         }
       }
     } else if op == "=~" || op == "!~" {
@@ -215,8 +223,64 @@ func parseGraphIntRules(s string) ([]string, []string, error) {
         return nil, nil, errors.New("Syntax error: no regex opening symbol \"/\" at "+strconv.Itoa(s_pos))
       }
       s_pos++
-      if len
+      regex_start := s_pos
+      regex_closed := false
+      regex_pattern := ""
+      for s_pos < len(s) {
+        if s[s_pos] == '\\' && (s_pos+1) < len(s) && (s[s_pos+1] == '\\' || s[s_pos+1] == '/') {
+          regex_pattern += string(s[s_pos+1])
+          s_pos += 2
+        } else if s[s_pos] == '/' {
+          s_pos++
+          regex_closed = true
+          if s_pos < len(s) && s[s_pos] != '\n' && s[s_pos] != ' ' && s[s_pos] != '\t' {
+            return nil, nil, errors.New("Syntax error: trailing symbols after regex end at "+strconv.Itoa(s_pos))
+          }
+          break
+        } else if s[s_pos] == '\n' {
+          return nil, nil, errors.New("Syntax error: unclosed regex at "+strconv.Itoa(s_pos))
+        } else {
+          regex_pattern += string(s[s_pos])
+          s_pos++
+        }
+      }
+      if !regex_closed {
+        return nil, nil, errors.New("Syntax error: no regex closing at "+strconv.Itoa(s_pos))
+      }
+      if _, err := regexp.Compile(regex_pattern); err != nil {
+        return nil, nil, errors.New("Syntax error: regex compile error at "+strconv.Itoa(regex_start))
+      }
     }
+
+    for s_pos < len(s) && s[s_pos] == ' ' || s[s_pos] == '\n' || s[s_pos] == '\t' { s_pos++ }
+    if s_pos == len(s) {
+      if par_open != 0 {
+        return nil, nil, errors.New("No closing parenthesis")
+      }
+      if and_or_started {
+        return nil, nil, errors.New("No next expression after logical operator")
+      }
+      return ret_d, ret_i, nil
+    }
+
+    if s[s_pos] == ')' {
+      if par_open == 0 {
+        return nil, nil, errors.New("No opening parenthesis for ) at "+strconv.Itoa(s_pos))
+      }
+      if and_or_started {
+        return nil, nil, errors.New("Syntax error: unexpected ) at "+strconv.Itoa(s_pos))
+      }
+      par_open--
+      s_pos ++
+    } else if strings.Index(s[s_spos:], "||") == 0 && strings.Index(s[s_spos:], "&&") == 0 {
+      if and_or_started {
+        return nil, nil, errors.New("Syntax error: unexpected logical operator at "+strconv.Itoa(s_pos))
+      } else {
+        and_or_started = true
+        s_pos += 2
+      }
+    }
+
   }
 }
 
