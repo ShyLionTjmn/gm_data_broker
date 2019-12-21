@@ -44,6 +44,11 @@ var intWatchKeys = []string{"ifOperStatus", "portId", "ifAdminStatus", "ifIndex"
                             "portMode", "portTrunkVlans", "portHybridTag", "portHybridUntag", "portPvid",
                            }
 
+var intGraphKeys = []string{"ifHCInOctets", "ifHCOutOctets", "ifInUnicastPkts", "ifOutUnicastPkts", "ifInMulticastPkts", "ifOutMulticastPkts",
+                            "ifInBroadcastPkts", "ifOutBroadcastPkts", "ifOperStatus", "ifInErrors", "ifInCRCErrors",
+                            "oltRxPower", "onuRxPower", "onuDistance",
+                           }
+
 var lldpKeySet = []string{"RemSysName", "RemChassisId", "RemChassisIdSubtype", "RemPortDescr", "RemPortId", "RemPortIdSubtype"}
 
 type ByInt64 []int64
@@ -1008,6 +1013,43 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   }
 
   dev["_startup"] = startup
+
+  if (startup || !devs.EvM(dev_id)) && red != nil && red.Err() == nil {
+    //create graph items
+
+    red_args := redis.Args{}.Add("ip_graphs."+ip)
+    red_args = red_args.Add("time", time.Now().Unix())
+
+    if dev.EvM("CPUs") {
+      for cpu_id, _ := range dev.VM("CPUs") {
+        if gk, ok := dev.Vse("CPUs", cpu_id, "_graph_key"); ok {
+          gf := esc_dev_id+"/CPU."+gk+".rrd"
+          red_args = red_args.Add(gk, gf)
+          dev.VM("CPUs", cpu_id)["_graph_file"] = gf
+        }
+      }
+    }
+
+    if dev.EvA("memoryUsed") {
+      gf := esc_dev_id+"/memoryUsed.rrd"
+      red_args = red_args.Add("memoryUsed.0", gf)
+      dev["memoryUsed_graph_file"] = gf
+    }
+
+    if dev.EvM("interfaces") {
+      for ifName, int_m := range dev.VM("interfaces") {
+        int_h := int_m.(M)
+        ifIndex := int_h.Vs("ifIndex")
+        for _, key := range intGraphKeys {
+          TODO
+      }
+    }
+
+    red.Send("MULTI")
+    red.Send("DEL", "ip_graphs."+ip)
+    red.Send("HSET", red_args...)
+    red.Do("EXEC")
+  }
 
   if startup {
     dev["_status_alerted_value"] = status_alerted_value
