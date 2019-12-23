@@ -1014,7 +1014,13 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
   dev["_startup"] = startup
 
-  if (startup || !devs.EvM(dev_id)) && red != nil && red.Err() == nil {
+  esc_dev_id := dev_id
+
+  esc_dev_id = strings.ReplaceAll(esc_dev_id, ":", "c")
+  esc_dev_id = strings.ReplaceAll(esc_dev_id, " ", "_")
+  esc_dev_id = strings.ReplaceAll(esc_dev_id, `/`, "s")
+
+  if (startup || !devs.EvM(dev_id)) && red != nil && red.Err() == nil && graph_int_rules_time > 0 {
     //create graph items
 
     red_args := redis.Args{}.Add("ip_graphs."+ip)
@@ -1040,8 +1046,14 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       for ifName, int_m := range dev.VM("interfaces") {
         int_h := int_m.(M)
         ifIndex := int_h.Vs("ifIndex")
-        for _, key := range intGraphKeys {
-          TODO
+        if ok, _ := MatchGraphIntRules(graph_int_rules, dev, ifName); ok {
+          for _, key := range intGraphKeys {
+            if int_h.EvA(key) {
+              gf := esc_dev_id+"/"+key+"."+ifIndex+".rrd"
+              red_args = red_args.Add(key+"."+ifIndex, gf)
+            }
+          }
+        }
       }
     }
 
@@ -1049,6 +1061,12 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     red.Send("DEL", "ip_graphs."+ip)
     red.Send("HSET", red_args...)
     red.Do("EXEC")
+
+    dev["_graph_int_rules_time"] = graph_int_rules_time
+  }
+
+  if graph_int_rules_time == 0 {
+    dev["_graph_int_rules_time"] =  int64(0)
   }
 
   if startup {
@@ -1063,6 +1081,77 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       logger.Event("dev_new", "", "ip", ip, "short_name", dev.Vs("short_name"), "loc", location)
       logger.Save()
     } else {
+      dev["_graph_int_rules_time"] = old.Vi("_graph_int_rules_time")
+
+      reevaluate := dev.Vi("_graph_int_rules_time") != graph_int_rules_time
+
+      graphChanges := make([]string, 0)
+      if opt_v > 1 && old.Vi("_graph_int_rules_time") != graph_int_rules_time {
+        fmt.Println("graph_int_rules_time changed", old.Vi("_graph_int_rules_time"), " -> ", graph_int_rules_time)
+      }
+
+      if graph_int_rules_time > 0 && !reevaluate {
+        //check if rules fields had changed
+        for _, key := range graph_int_watch_dev {
+          if (dev.EvA(key) && !old.EvA(key)) ||
+             (!dev.EvA(key) && old.EvA(key)) ||
+             (dev.EvA(key) && old.EvA(key) && dev.VA(key) != old.VA(key)) ||
+             (dev.EvA(key) && old.EvA(key) && reflect.TypeOf(dev.VA(key)) != reflect.TypeOf(old.VA(key))) ||
+             false {
+            //if
+            reevaluate = true
+            graphChanges = append(graphChanges, key)
+            break
+          }
+        }
+      }
+
+      if graph_int_rules_time > 0 && !reevaluate {
+        //check if rules fields had changed
+        for _, key := range graph_int_watch_dev_ne {
+          if (dev.EvA(key) && !old.EvA(key)) ||
+             (!dev.EvA(key) && old.EvA(key)) ||
+             (dev.EvA(key) && old.EvA(key) && reflect.TypeOf(dev.VA(key)) != reflect.TypeOf(old.VA(key))) ||
+             false {
+            //if
+            reevaluate = true
+            graphChanges = append(graphChanges, key)
+            break
+          } else if dev.EvA(key) && old.EvA(key) {
+            len_new := 0
+            len_old := 0
+            //if
+            switch dev.VA(key).(type) {
+            case []interface{}:
+              len_new = len(dev.VA(key).([]interface{}))
+              len_old = len(old.VA(key).([]interface{}))
+            case []string:
+              len_new = len(dev.VA(key).([]string))
+              len_old = len(old.VA(key).([]string))
+            case []int64:
+              len_new = len(dev.VA(key).([]int64))
+              len_old = len(old.VA(key).([]int64))
+            case []uint64:
+              len_new = len(dev.VA(key).([]uint64))
+              len_old = len(old.VA(key).([]uint64))
+            }
+            if len_new != len_old {
+              reevaluate = true
+              graphChanges = append(graphChanges, key)
+              break
+            }
+          } else if (dev.EvM(key) && !old.EvM(key)) ||
+             (!dev.EvM(key) && old.EvM(key)) ||
+             (dev.EvM(key) && old.EvM(key) && len(dev.VM(key)) != len(old.VM(key))) ||
+             false {
+            //if
+            graphChanges = append(graphChanges, key)
+            reevaluate = true
+            break
+          }
+        }
+      }
+
       logger := &Logger{Conn: red, Dev: dev_id}
       alerter := &Alerter{Conn: red}
 
@@ -1102,6 +1191,82 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
           logger.Event("if_new", ifName)
         } else {
           if ifName != "CPU port" {
+
+            if graph_int_rules_time > 0 && !reevaluate {
+              if dev.EvA("interfaces", ifName, "ifIndex") != old.EvA("interfaces", ifName, "ifIndex") {
+                reevaluate = true
+                graphChanges = append(graphChanges, ifName+":ifIndex")
+              }
+            }
+
+            if graph_int_rules_time > 0 && !reevaluate {
+
+              //check if rules fields had changed
+              for _, key := range graph_int_watch_int {
+                if (dev.EvA("interfaces", ifName, key) && !old.EvA("interfaces", ifName, key)) ||
+                   (!dev.EvA("interfaces", ifName, key) && old.EvA("interfaces", ifName, key)) ||
+                   (dev.EvA("interfaces", ifName, key) && old.EvA("interfaces", ifName, key) &&
+                    reflect.TypeOf(dev.VA("interfaces", ifName, key)) != reflect.TypeOf(old.VA("interfaces", ifName, key))) ||
+                   (dev.EvA("interfaces", ifName, key) && old.EvA("interfaces", ifName, key) &&
+                    dev.VA("interfaces", ifName, key) != old.VA("interfaces", ifName, key)) ||
+                   false {
+                  //if
+                  reevaluate = true
+                  graphChanges = append(graphChanges, ifName+":"+key)
+                  break
+                }
+              }
+            }
+
+            if graph_int_rules_time > 0 && !reevaluate {
+
+              //check if rules fields had changed
+              for _, key := range graph_int_watch_int_ne {
+                if (dev.EvA("interfaces", ifName, key) && !old.EvA("interfaces", ifName, key)) ||
+                   (!dev.EvA("interfaces", ifName, key) && old.EvA("interfaces", ifName, key)) ||
+                   (dev.EvA("interfaces", ifName, key) && old.EvA("interfaces", ifName, key) &&
+                    reflect.TypeOf(dev.VA("interfaces", ifName, key)) != reflect.TypeOf(old.VA("interfaces", ifName, key))) ||
+                   false {
+                  //if
+                  graphChanges = append(graphChanges, ifName+":"+key)
+                  reevaluate = true
+                  break
+                } else if dev.EvA("interfaces", ifName, key) && old.EvA("interfaces", ifName, key) {
+                  len_new := 0
+                  len_old := 0
+                  //if
+                  switch dev.VA("interfaces", ifName, key).(type) {
+                  case []interface{}:
+                    len_new = len(dev.VA("interfaces", ifName, key).([]interface{}))
+                    len_old = len(old.VA("interfaces", ifName, key).([]interface{}))
+                  case []string:
+                    len_new = len(dev.VA("interfaces", ifName, key).([]string))
+                    len_old = len(old.VA("interfaces", ifName, key).([]string))
+                  case []int64:
+                    len_new = len(dev.VA("interfaces", ifName, key).([]int64))
+                    len_old = len(old.VA("interfaces", ifName, key).([]int64))
+                  case []uint64:
+                    len_new = len(dev.VA("interfaces", ifName, key).([]uint64))
+                    len_old = len(old.VA("interfaces", ifName, key).([]uint64))
+                  }
+                  if len_new != len_old {
+                    graphChanges = append(graphChanges, ifName+":"+key)
+                    reevaluate = true
+                    break
+                  }
+                } else if (dev.EvM("interfaces", ifName, key) && !old.EvM("interfaces", ifName, key)) ||
+                   (!dev.EvM("interfaces", ifName, key) && old.EvM("interfaces", ifName, key)) ||
+                   (dev.EvM("interfaces", ifName, key) && old.EvM("interfaces", ifName, key) &&
+                    len(dev.VM("interfaces", ifName, key)) != len(old.VM("interfaces", ifName, key))) ||
+                   false {
+                  //if
+                  graphChanges = append(graphChanges, ifName+":"+key)
+                  reevaluate = true
+                  break
+                }
+              }
+            }
+
             for _, key := range intWatchKeys {
               if !old.EvA("interfaces", ifName, key) && dev.EvA("interfaces", ifName, key) {
                 logger.Event("if_key_new", ifName, "key", key)
@@ -1171,7 +1336,6 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
           if new_stp_blocked_inst != old_stp_blocked_inst {
             logger.Event("if_stp_block_change", ifName, "old_blocked_inst", old_stp_blocked_inst, "new_blocked_inst", new_stp_blocked_inst)
           }
-
 
 
         }
@@ -1251,6 +1415,54 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       devs[dev_id] = dev
       logger.Save()
       alerter.Save()
+
+      if reevaluate && red != nil && red.Err() == nil {
+
+        if opt_v > 1 {
+          fmt.Println("Device graph items recalc", ip, dev_id)
+          fmt.Println("\t", strings.Join(graphChanges, ","))
+        }
+        red_args := redis.Args{}.Add("ip_graphs."+ip)
+        red_args = red_args.Add("time", time.Now().Unix())
+
+        if dev.EvM("CPUs") {
+          for cpu_id, _ := range dev.VM("CPUs") {
+            if gk, ok := dev.Vse("CPUs", cpu_id, "_graph_key"); ok {
+              gf := esc_dev_id+"/CPU."+gk+".rrd"
+              red_args = red_args.Add(gk, gf)
+              dev.VM("CPUs", cpu_id)["_graph_file"] = gf
+            }
+          }
+        }
+
+        if dev.EvA("memoryUsed") {
+          gf := esc_dev_id+"/memoryUsed.rrd"
+          red_args = red_args.Add("memoryUsed.0", gf)
+          dev["memoryUsed_graph_file"] = gf
+        }
+
+        if dev.EvM("interfaces") {
+          for ifName, int_m := range dev.VM("interfaces") {
+            int_h := int_m.(M)
+            ifIndex := int_h.Vs("ifIndex")
+            if ok, _ := MatchGraphIntRules(graph_int_rules, dev, ifName); ok {
+              for _, key := range intGraphKeys {
+                if int_h.EvA(key) {
+                  gf := esc_dev_id+"/"+key+"."+ifIndex+".rrd"
+                  red_args = red_args.Add(key+"."+ifIndex, gf)
+                }
+              }
+            }
+          }
+        }
+
+        red.Send("MULTI")
+        red.Send("DEL", "ip_graphs."+ip)
+        red.Send("HSET", red_args...)
+        red.Do("EXEC")
+
+        dev["_graph_int_rules_time"] = graph_int_rules_time
+      }
     }
 
   }
