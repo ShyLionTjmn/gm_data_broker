@@ -24,9 +24,12 @@ import (
 
 )
 
+var safeInt_regex *regexp.Regexp
+
 func init() {
   w.WhereAmI()
   regexp.MustCompile("")
+  safeInt_regex = regexp.MustCompile(`^[a-zA-Z0-9\._\-]+$`)
 }
 
 var legNeiErrNoDev = errors.New("nd")
@@ -42,6 +45,7 @@ var devAlertKeys = []string{"powerState"}
 
 var intWatchKeys = []string{"ifOperStatus", "portId", "ifAdminStatus", "ifIndex", "ifAlias", "ifType",
                             "portMode", "portTrunkVlans", "portHybridTag", "portHybridUntag", "portPvid",
+                            "monitorDstSession",
                            }
 
 var intGraphKeys = []string{"ifHCInOctets", "ifHCOutOctets", "ifInUnicastPkts", "ifOutUnicastPkts", "ifInMulticastPkts", "ifOutMulticastPkts",
@@ -1046,10 +1050,16 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       for ifName, int_m := range dev.VM("interfaces") {
         int_h := int_m.(M)
         ifIndex := int_h.Vs("ifIndex")
-        if ok, _ := MatchGraphIntRules(graph_int_rules, dev, ifName); ok {
+        esc_if_name := strings.ReplaceAll(ifName, ":", "c")
+        esc_if_name = strings.ReplaceAll(esc_if_name, " ", "_")
+        esc_if_name = strings.ReplaceAll(esc_if_name, "\t", "_")
+        esc_if_name = strings.ReplaceAll(esc_if_name, `/`, "s")
+        esc_if_name = strings.ReplaceAll(esc_if_name, `>`, "_")
+        esc_if_name = strings.ReplaceAll(esc_if_name, `<`, "_")
+        if ok, _ := MatchGraphIntRules(graph_int_rules, dev, ifName); ok && safeInt_regex.MatchString(esc_if_name) {
           for _, key := range intGraphKeys {
             if int_h.EvA(key) {
-              gf := esc_dev_id+"/"+key+"."+ifIndex+".rrd"
+              gf := esc_dev_id+"/"+esc_if_name+"."+key+".rrd"
               red_args = red_args.Add(key+"."+ifIndex, gf)
             }
           }
@@ -1445,10 +1455,16 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
           for ifName, int_m := range dev.VM("interfaces") {
             int_h := int_m.(M)
             ifIndex := int_h.Vs("ifIndex")
-            if ok, _ := MatchGraphIntRules(graph_int_rules, dev, ifName); ok {
+            esc_if_name := strings.ReplaceAll(ifName, ":", "c")
+            esc_if_name = strings.ReplaceAll(esc_if_name, " ", "_")
+            esc_if_name = strings.ReplaceAll(esc_if_name, "\t", "_")
+            esc_if_name = strings.ReplaceAll(esc_if_name, `/`, "s")
+            esc_if_name = strings.ReplaceAll(esc_if_name, `>`, "_")
+            esc_if_name = strings.ReplaceAll(esc_if_name, `<`, "_")
+            if ok, _ := MatchGraphIntRules(graph_int_rules, dev, ifName); ok && safeInt_regex.MatchString(esc_if_name) {
               for _, key := range intGraphKeys {
                 if int_h.EvA(key) {
-                  gf := esc_dev_id+"/"+key+"."+ifIndex+".rrd"
+                  gf := esc_dev_id+"/"+esc_if_name+"."+key+".rrd"
                   red_args = red_args.Add(key+"."+ifIndex, gf)
                 }
               }

@@ -149,7 +149,7 @@ func queue_data_sub(stop_ch chan string, wg *sync.WaitGroup) {
   for !stop_signalled {
 
     var rsub *redsub.Redsub
-    rsub, err = redsub.New("unix", REDIS_SOCKET, red_db, "queue_saved")
+    rsub, err = redsub.New("unix", REDIS_SOCKET, red_db, "queue_saved", 100)
     if err == nil {
       redState(true)
 L66:  for !stop_signalled {
