@@ -221,7 +221,45 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
     m["arp"]=devs_arp
     j, err = json.MarshalIndent(m, "", "  ")
   } else if req.URL.Path == "/" {
-    j, err = json.MarshalIndent(devs, "", "  ")
+    _, with_macs := req.Form["with_macs"]
+    _, with_arp := req.Form["with_arp"]
+    var short_name_pattern string
+    var short_name_regex *regexp.Regexp
+    short_name_pattern = req.Form.Get("match_short_name")
+    err = nil
+    if short_name_pattern != "" {
+      short_name_regex, err = regexp.Compile(short_name_pattern)
+    }
+    if err == nil {
+      ret := make(M)
+
+      for dev_id, dev_m := range devs {
+        dev_h := dev_m.(M)
+        if (short_name_pattern == "" || short_name_regex.MatchString(dev_h.Vs("short_name"))) &&
+           true {
+          //if
+          ret[dev_id] = dev_h.Copy()
+
+          if with_macs && devs_macs.EvM(dev_id) {
+            for ifName, macs_m := range devs_macs.VM(dev_id) {
+              if if_h, ok := ret.VMe(dev_id, "interfaces", ifName); ok {
+                if_h["macs"] = macs_m
+              }
+            }
+          }
+          if with_arp && devs_arp.EvM(dev_id) {
+            for ifName, arp_m := range devs_arp.VM(dev_id) {
+              if if_h, ok := ret.VMe(dev_id, "interfaces", ifName); ok {
+                if_h["arp_table"] = arp_m
+              }
+            }
+          }
+        }
+      }
+
+      j, err = json.MarshalIndent(ret, "", "  ")
+    }
+
   } else {
     globalMutex.RUnlock()
     http.Error(w, "Not found", http.StatusNotFound)
