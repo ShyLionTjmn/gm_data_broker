@@ -1019,6 +1019,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   dev["_startup"] = startup
 
   esc_dev_id := dev_id
+  //esc_dev_id := dev.Vs("short_name")
 
   esc_dev_id = strings.ReplaceAll(esc_dev_id, ":", "c")
   esc_dev_id = strings.ReplaceAll(esc_dev_id, " ", "_")
@@ -1057,9 +1058,11 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
         esc_if_name = strings.ReplaceAll(esc_if_name, `>`, "_")
         esc_if_name = strings.ReplaceAll(esc_if_name, `<`, "_")
         if ok, _ := MatchGraphIntRules(graph_int_rules, dev, ifName); ok && safeInt_regex.MatchString(esc_if_name) {
+          gf_prefix := esc_dev_id+"/"+esc_if_name
+          int_h["_graph_prefix"] = gf_prefix
           for _, key := range intGraphKeys {
             if int_h.EvA(key) {
-              gf := esc_dev_id+"/"+esc_if_name+"."+key+".rrd"
+              gf := gf_prefix+"."+key+".rrd"
               red_args = red_args.Add(key+"."+ifIndex, gf)
             }
           }
@@ -1462,9 +1465,11 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
             esc_if_name = strings.ReplaceAll(esc_if_name, `>`, "_")
             esc_if_name = strings.ReplaceAll(esc_if_name, `<`, "_")
             if ok, _ := MatchGraphIntRules(graph_int_rules, dev, ifName); ok && safeInt_regex.MatchString(esc_if_name) {
+              gf_prefix := esc_dev_id+"/"+esc_if_name
+              int_h["_graph_prefix"] = gf_prefix
               for _, key := range intGraphKeys {
                 if int_h.EvA(key) {
-                  gf := esc_dev_id+"/"+esc_if_name+"."+key+".rrd"
+                  gf := gf_prefix+"."+key+".rrd"
                   red_args = red_args.Add(key+"."+ifIndex, gf)
                 }
               }
