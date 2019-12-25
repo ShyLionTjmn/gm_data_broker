@@ -126,12 +126,11 @@ func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) (succ
     m["new"] = new.VA(key)
   } else {
     m["alert_type"] = "int"
-    for _, attr := range []string{"ifAlias", "ifType", "portMode"} {
-      if val, ok := new.VAe(attr); ok {
+    for _, attr := range []string{"ifAlias", "ifType", "portMode", "ifIndex"} {
+      if val, ok := new.VAe("interfaces", ifName, attr); ok {
         m[attr] = val
       }
     }
-    m["ifIndex"] = new.Vs("ifIndex")
     m["ifName"] = ifName
     m["new"] = new.VA("interfaces", ifName, key)
   }
@@ -1283,10 +1282,18 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
               }
             }
 
+debug_printed := false
             for _, key := range intWatchKeys {
               if !old.EvA("interfaces", ifName, key) && dev.EvA("interfaces", ifName, key) {
                 logger.Event("if_key_new", ifName, "key", key)
               } else if old.EvA("interfaces", ifName, key) && !dev.EvA("interfaces", ifName, key) {
+if key == "ifOperStatus" && !debug_printed {
+  fmt.Println(ip)
+  fmt.Println(raw.VM("ifOperStatus"))
+  debug_printed = true
+  red.Do("HSET", "dev_list", ip, now_unix_str+":debug")
+  panic("ifOperStatus")
+}
                 logger.Event("if_key_gone", ifName, "key", key)
               } else if reflect.TypeOf(old.VA("interfaces", ifName, key)) != reflect.TypeOf(dev.VA("interfaces", ifName, key)) {
                 logger.Event("if_key_type_change", ifName, "key", key,
@@ -1410,7 +1417,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
             }
             for key, nei_i := range old_pn {
               nei := nei_i.(string)
-              if !old_pn.EvA(key) {
+              if !new_pn.EvA(key) {
                 attrs := make([]string, 0)
                 attrs = append(attrs, "lldp_port_nei_gone", port_index)
                 for _, subkey := range lldpKeySet {
@@ -1492,4 +1499,5 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   data.VM("dev_list", ip)["time"] = time.Now().Unix()
 
   red.Do("SET", "dev_last_seen."+dev_id, strconv.FormatInt(last_seen, 10)+":"+ip)
+  red.Do("SET", "ip_dev_id."+ip, dev_id)
 }
