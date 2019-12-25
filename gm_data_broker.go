@@ -37,6 +37,8 @@ const DEAD_AGE=600
 const DB_REFRESH_TIME= 10
 const DB_ERROR_TIME= 5
 
+const AUX_DATA_REFRESH=90
+
 const ERROR_SLEEP=15
 const IDLE_SLEEP=600
 
@@ -63,6 +65,10 @@ var graph_int_watch_dev []string
 var graph_int_watch_int []string
 var graph_int_watch_dev_ne []string
 var graph_int_watch_int_ne []string
+
+var aux_data_time int64
+
+var sysoids_time string
 
 var opt_Q bool
 var opt_1 bool
@@ -421,7 +427,32 @@ MAIN_LOOP:
       }
     }
 
-    if !redis_loaded && red != nil {
+    if (aux_data_time + AUX_DATA_REFRESH) < time.Now().Unix() && red != nil && red.Err() == nil {
+      aux_data_time = time.Now().Unix()
+      var r_time string
+      r_time, err = redis.String(red.Do("HGET", "sysoids.short", "time"))
+      if err == nil && r_time != sysoids_time {
+        var redmap map[string]string
+        redmap, err = redis.StringMap(red.Do("HGETALL", "sysoids.short"))
+        redmap2, err2 := redis.StringMap(red.Do("HGETALL", "sysoids.long"))
+        if err == nil && err2 == nil {
+          globalMutex.Lock()
+          sysoids_time = r_time
+          delete(data, "sysoids")
+          data["sysoids"] = make(M)
+          for key, short := range redmap {
+            if long, ok := redmap2[key]; ok {
+              data.VM("sysoids")[key] = make(M)
+              data.VM("sysoids", key)["short"] = short
+              data.VM("sysoids", key)["long"] = long
+            }
+          }
+          globalMutex.Unlock()
+        }
+      }
+    }
+
+    if !redis_loaded && red != nil && red.Err() == nil {
       var dev_map M
 
       dev_map, err = read_devlist(red)

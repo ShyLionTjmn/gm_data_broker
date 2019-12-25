@@ -126,9 +126,12 @@ func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) (succ
     m["new"] = new.VA(key)
   } else {
     m["alert_type"] = "int"
-    m["ifAlias"] = new.Vs("ifAlias")
-    m["ifType"] = new.Vs("ifType")
-    m["portMode"] = new.Vs("portMode")
+    for _, attr := range []string{"ifAlias", "ifType", "portMode"} {
+      if val, ok := new.VAe(attr); ok {
+        m[attr] = val
+      }
+    }
+    m["ifIndex"] = new.Vs("ifIndex")
     m["ifName"] = ifName
     m["new"] = new.VA("interfaces", ifName, key)
   }
@@ -612,6 +615,15 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   // process links
   check_matrix := make(M)
 
+  if sysoids_h, ok := data.VMe("sysoids", dev.Vs("sysObjectID")); ok {
+    dev["model_short"] = sysoids_h.Vs("short")
+    dev["model_long"] = sysoids_h.Vs("long")
+  } else {
+    dev["model_short"] = "Unknown"
+    dev["model_long"] = "Unknown"
+  }
+
+  // build l2 neighbour matrix
   if dev.EvM("lldp_ports") && dev.Evs("locChassisId") {
     for port_index, port_h := range dev.VM("lldp_ports") {
       if port_h.(M).EvM("neighbours") {
