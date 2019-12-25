@@ -1018,12 +1018,8 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
   dev["_startup"] = startup
 
-  esc_dev_id := dev_id
+  esc_dev_id := SafeDevId(dev_id)
   //esc_dev_id := dev.Vs("short_name")
-
-  esc_dev_id = strings.ReplaceAll(esc_dev_id, ":", "c")
-  esc_dev_id = strings.ReplaceAll(esc_dev_id, " ", "_")
-  esc_dev_id = strings.ReplaceAll(esc_dev_id, `/`, "s")
 
   if (startup || !devs.EvM(dev_id)) && red != nil && red.Err() == nil && graph_int_rules_time > 0 {
     //create graph items
@@ -1051,12 +1047,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       for ifName, int_m := range dev.VM("interfaces") {
         int_h := int_m.(M)
         ifIndex := int_h.Vs("ifIndex")
-        esc_if_name := strings.ReplaceAll(ifName, ":", "c")
-        esc_if_name = strings.ReplaceAll(esc_if_name, " ", "_")
-        esc_if_name = strings.ReplaceAll(esc_if_name, "\t", "_")
-        esc_if_name = strings.ReplaceAll(esc_if_name, `/`, "s")
-        esc_if_name = strings.ReplaceAll(esc_if_name, `>`, "_")
-        esc_if_name = strings.ReplaceAll(esc_if_name, `<`, "_")
+        esc_if_name := SafeIntId(ifName)
         if ok, _ := MatchGraphIntRules(graph_int_rules, dev, ifName); ok && safeInt_regex.MatchString(esc_if_name) {
           gf_prefix := esc_dev_id+"/"+esc_if_name
           int_h["_graph_prefix"] = gf_prefix
@@ -1458,12 +1449,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
           for ifName, int_m := range dev.VM("interfaces") {
             int_h := int_m.(M)
             ifIndex := int_h.Vs("ifIndex")
-            esc_if_name := strings.ReplaceAll(ifName, ":", "c")
-            esc_if_name = strings.ReplaceAll(esc_if_name, " ", "_")
-            esc_if_name = strings.ReplaceAll(esc_if_name, "\t", "_")
-            esc_if_name = strings.ReplaceAll(esc_if_name, `/`, "s")
-            esc_if_name = strings.ReplaceAll(esc_if_name, `>`, "_")
-            esc_if_name = strings.ReplaceAll(esc_if_name, `<`, "_")
+            esc_if_name := SafeIntId(ifName)
             if ok, _ := MatchGraphIntRules(graph_int_rules, dev, ifName); ok && safeInt_regex.MatchString(esc_if_name) {
               gf_prefix := esc_dev_id+"/"+esc_if_name
               int_h["_graph_prefix"] = gf_prefix

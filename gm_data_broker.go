@@ -76,6 +76,7 @@ func init() {
   data["l2_links"] = make(M) // exported map with actual links. Keep link with down (2) state if both devices in db and no neighbours and any of it is down or interface is down
   data["l3_links"] = make(M)
   data["dev_list"] = make(M)
+  data["sysoids"] = make(M)
 
   w.WhereAmI()
   errors.New("")
@@ -223,33 +224,42 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
   } else if req.URL.Path == "/" {
     _, with_macs := req.Form["with_macs"]
     _, with_arp := req.Form["with_arp"]
-    var short_name_pattern string
     var short_name_regex *regexp.Regexp
-    short_name_pattern = req.Form.Get("match_short_name")
+    short_name_pattern := req.Form.Get("match_short_name")
+    by_dev_id := req.Form.Get("dev_id")
+    by_safe_dev_id := req.Form.Get("safe_dev_id")
     err = nil
     if short_name_pattern != "" {
       short_name_regex, err = regexp.Compile(short_name_pattern)
     }
     if err == nil {
       ret := make(M)
+      ret_devs := ret.MkM("devs")
+
+      if _, ok := req.Form["with_l2_links"]; ok {
+        ret["l2_links"] = data.VM("l2_links")
+      }
 
       for dev_id, dev_m := range devs {
         dev_h := dev_m.(M)
+        safe_dev_id := SafeDevId(dev_id)
         if (short_name_pattern == "" || short_name_regex.MatchString(dev_h.Vs("short_name"))) &&
+           (by_dev_id == "" || by_dev_id == dev_id) &&
+           (by_safe_dev_id == "" || by_safe_dev_id == safe_dev_id) &&
            true {
           //if
-          ret[dev_id] = dev_h.Copy()
+          ret_devs[dev_id] = dev_h.Copy()
 
           if with_macs && devs_macs.EvM(dev_id) {
             for ifName, macs_m := range devs_macs.VM(dev_id) {
-              if if_h, ok := ret.VMe(dev_id, "interfaces", ifName); ok {
+              if if_h, ok := ret_devs.VMe(dev_id, "interfaces", ifName); ok {
                 if_h["macs"] = macs_m
               }
             }
           }
           if with_arp && devs_arp.EvM(dev_id) {
             for ifName, arp_m := range devs_arp.VM(dev_id) {
-              if if_h, ok := ret.VMe(dev_id, "interfaces", ifName); ok {
+              if if_h, ok := ret_devs.VMe(dev_id, "interfaces", ifName); ok {
                 if_h["arp_table"] = arp_m
               }
             }
