@@ -114,6 +114,7 @@ func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) (succ
   m["id"] = new.Vs("id")
   m["data_ip"] = new.Vs("data_ip")
   m["short_name"] = new.Vs("short_name")
+  m["model_short"] = new.Vs("model_short")
   m["sysObjectID"] = new.Vs("sysObjectID")
   m["sysLocation"] = new.Vs("sysLocation")
   m["last_seen"] = new.Vs("last_seen")
