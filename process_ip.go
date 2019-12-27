@@ -141,7 +141,7 @@ func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) (succ
   j, err := json.Marshal(m)
   if err == nil {
     if a.Conn != nil && a.Conn.Err() == nil {
-      if _, err = a.Conn.Do("LPUSH", "alert", j); err == nil {
+      if _, err = a.Conn.Do("RPUSH", "alert", j); err == nil {
         success = true
       }
 
@@ -161,7 +161,7 @@ func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) (succ
 
 func (a *Alerter) Save() {
   if a.Conn != nil && a.Conn.Err() == nil {
-    a.Conn.Do("LTRIM", "alert", 0, ALERT_MAX_EVENTS)
+    a.Conn.Do("LTRIM", "alert", -ALERT_MAX_EVENTS, -1)
     a.Conn.Do("PUBLISH", "alert.poke", time.Now().String())
   }
 }
