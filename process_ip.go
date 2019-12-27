@@ -69,6 +69,7 @@ const ALERT_MAX_EVENTS = 10000
 type Logger struct {
   Conn		redis.Conn
   Dev		string
+  Count		int
 }
 
 func (l *Logger) Event(f ... string) { // "event", key|"", "attr", value, "attr", value, ...
@@ -89,6 +90,7 @@ func (l *Logger) Event(f ... string) { // "event", key|"", "attr", value, "attr"
   if err == nil {
     if l.Conn != nil && l.Conn.Err() == nil {
       l.Conn.Do("LPUSH", "log."+l.Dev, j)
+      l.Count++
       if opt_v > 1 {
         color.Magenta("Log: %s, %s", l.Dev, j)
       }
@@ -97,7 +99,8 @@ func (l *Logger) Event(f ... string) { // "event", key|"", "attr", value, "attr"
 }
 
 func (l *Logger) Save() {
-  if l.Conn != nil && l.Conn.Err() == nil {
+  if l.Conn != nil && l.Conn.Err() == nil && l.Count > 0 {
+    l.Count = 0
     l.Conn.Do("LTRIM", "log."+l.Dev, 0, LOG_MAX_EVENTS)
     l.Conn.Do("PUBLISH", "log.poke", l.Dev+"\t"+time.Now().String())
   }
@@ -105,6 +108,7 @@ func (l *Logger) Save() {
 
 type Alerter struct {
   Conn          redis.Conn
+  Count		int
 }
 
 func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) (success bool) {
@@ -124,6 +128,28 @@ func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) (succ
   m["time"] = strconv.FormatInt(time.Now().Unix(), 10)
   m["old"] = fmt.Sprint(old)
 
+  for _, field := range alert_fields {
+    if new.EvA(field) && !m.EvA(field) {
+      v := new.VA(field)
+      switch v.(type) {
+      case string,int64,uint64:
+        m[field] = new.Vs(field)
+      case []string:
+        m[field] = strings.Join(v.([]string), ",")
+      case []int64:
+        str_a := make([]string, len(v.([]int64)))
+        for idx, val := range v.([]int64) { str_a[idx] = strconv.FormatInt(val, 10) }
+        m[field] = strings.Join(str_a, ",")
+      case []uint64:
+        str_a := make([]string, len(v.([]uint64)))
+        for idx, val := range v.([]uint64) { str_a[idx] = strconv.FormatUint(val, 10) }
+        m[field] = strings.Join(str_a, ",")
+      default:
+        m[field] = fmt.Sprint(v)
+      }
+    }
+  }
+
   if ifName == "" {
     m["alert_type"] = "dev"
     m["new"] = fmt.Sprint(new.VA(key))
@@ -136,12 +162,34 @@ func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) (succ
     }
     m["ifName"] = ifName
     m["new"] = fmt.Sprint(new.VA("interfaces", ifName, key))
+    for _, field := range alert_fields {
+      if new.EvA("interfaces", ifName, field) && !m.EvA(field) {
+        v := new.VA("interfaces", ifName, field)
+        switch v.(type) {
+        case string,int64,uint64:
+          m[field] = new.Vs("interfaces", ifName, field)
+        case []string:
+          m[field] = strings.Join(v.([]string), ",")
+        case []int64:
+          str_a := make([]string, len(v.([]int64)))
+          for idx, val := range v.([]int64) { str_a[idx] = strconv.FormatInt(val, 10) }
+          m[field] = strings.Join(str_a, ",")
+        case []uint64:
+          str_a := make([]string, len(v.([]uint64)))
+          for idx, val := range v.([]uint64) { str_a[idx] = strconv.FormatUint(val, 10) }
+          m[field] = strings.Join(str_a, ",")
+        default:
+          m[field] = fmt.Sprint(v)
+        }
+      }
+    }
   }
 
   j, err := json.Marshal(m)
   if err == nil {
     if a.Conn != nil && a.Conn.Err() == nil {
       if _, err = a.Conn.Do("RPUSH", "alert", j); err == nil {
+        a.Count++
         success = true
       }
 
@@ -160,7 +208,8 @@ func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) (succ
 }
 
 func (a *Alerter) Save() {
-  if a.Conn != nil && a.Conn.Err() == nil {
+  if a.Conn != nil && a.Conn.Err() == nil && a.Count > 0 {
+    a.Count = 0
     a.Conn.Do("LTRIM", "alert", -ALERT_MAX_EVENTS, -1)
     a.Conn.Do("PUBLISH", "alert.poke", time.Now().String())
   }

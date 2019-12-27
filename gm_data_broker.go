@@ -37,7 +37,7 @@ const DEAD_AGE=600
 const DB_REFRESH_TIME= 10
 const DB_ERROR_TIME= 5
 
-const AUX_DATA_REFRESH=90
+const AUX_DATA_REFRESH=10
 
 const ERROR_SLEEP=15
 const IDLE_SLEEP=600
@@ -65,10 +65,10 @@ var graph_int_watch_dev []string
 var graph_int_watch_int []string
 var graph_int_watch_dev_ne []string
 var graph_int_watch_int_ne []string
+var alert_fields []string
 
 var aux_data_time int64
 
-var sysoids_time string
 
 var opt_Q bool
 var opt_1 bool
@@ -333,6 +333,8 @@ func http_server(stop chan string, wg *sync.WaitGroup) {
 func main() {
 
   var err error
+  var sysoids_time string
+  var alert_config_time string
 
   single_run := single.New("gm_data_broker."+red_db) // add redis_db here later
 
@@ -448,6 +450,33 @@ MAIN_LOOP:
             }
           }
           globalMutex.Unlock()
+        }
+      }
+      r_time, err = redis.String(red.Do("HGET", "alert_config", "time"))
+      if err == nil && r_time != alert_config_time {
+        var redmap map[string]string
+        redmap, err = redis.StringMap(red.Do("HGETALL", "alert_config"))
+        if err == nil {
+          new_fields := make([]string, 0)
+          for key, rule := range redmap {
+            if dotpos := strings.Index(key, "."); dotpos > 0 && len(key[dotpos+1:]) > 0 {
+              if key[:dotpos] == "rule" || key[:dotpos] == "group" {
+                var rule_fields []string
+                rule_fields, err = ParseAlertRule(rule)
+                if err != nil {
+                  break
+                }
+                for _, field := range rule_fields {
+                  new_fields = StrAppendOnce(new_fields, field)
+                }
+              }
+            }
+          }
+          if err == nil {
+            globalMutex.Lock()
+            alert_fields = new_fields
+            globalMutex.Unlock()
+          }
         }
       }
     }
