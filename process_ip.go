@@ -111,6 +111,7 @@ func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) (succ
   success = false
   m := make(M)
 
+  // WRITE STRINGS ONLY!
   m["id"] = new.Vs("id")
   m["data_ip"] = new.Vs("data_ip")
   m["short_name"] = new.Vs("short_name")
@@ -118,22 +119,23 @@ func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) (succ
   m["sysObjectID"] = new.Vs("sysObjectID")
   m["sysLocation"] = new.Vs("sysLocation")
   m["last_seen"] = new.Vs("last_seen")
+  m["overall_status"] = new.Vs("overall_status")
   m["alert_key"] = key
-  m["time"] = time.Now().Unix()
-  m["old"] = old
+  m["time"] = strconv.FormatInt(time.Now().Unix(), 10)
+  m["old"] = fmt.Sprint(old)
 
   if ifName == "" {
     m["alert_type"] = "dev"
-    m["new"] = new.VA(key)
+    m["new"] = fmt.Sprint(new.VA(key))
   } else {
     m["alert_type"] = "int"
     for _, attr := range []string{"ifAlias", "ifType", "portMode", "ifIndex"} {
       if val, ok := new.VAe("interfaces", ifName, attr); ok {
-        m[attr] = val
+        m[attr] = fmt.Sprint(val)
       }
     }
     m["ifName"] = ifName
-    m["new"] = new.VA("interfaces", ifName, key)
+    m["new"] = fmt.Sprint(new.VA("interfaces", ifName, key))
   }
 
   j, err := json.Marshal(m)
@@ -1283,11 +1285,12 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
               }
             }
 
-debug_printed := false
+//debug_printed := false
             for _, key := range intWatchKeys {
               if !old.EvA("interfaces", ifName, key) && dev.EvA("interfaces", ifName, key) {
                 logger.Event("if_key_new", ifName, "key", key)
               } else if old.EvA("interfaces", ifName, key) && !dev.EvA("interfaces", ifName, key) {
+/*
 if key == "ifOperStatus" && !debug_printed {
   fmt.Println(ip)
   fmt.Println(raw.VM("ifOperStatus"))
@@ -1295,6 +1298,7 @@ if key == "ifOperStatus" && !debug_printed {
   red.Do("HSET", "dev_list", ip, now_unix_str+":debug")
   panic("ifOperStatus")
 }
+*/
                 logger.Event("if_key_gone", ifName, "key", key)
               } else if reflect.TypeOf(old.VA("interfaces", ifName, key)) != reflect.TypeOf(dev.VA("interfaces", ifName, key)) {
                 logger.Event("if_key_type_change", ifName, "key", key,
