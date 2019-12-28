@@ -349,6 +349,8 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   var err error
   var raw M
 
+  ip_neighbours := 0
+
   var red redis.Conn
 
   red, err = RedisCheck(red, "unix", REDIS_SOCKET, red_db)
@@ -679,6 +681,14 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     for port_index, port_h := range dev.VM("lldp_ports") {
       if port_h.(M).EvM("neighbours") {
         for _, nei_h := range port_h.(M).VM("neighbours") {
+          if rem_ip, ok := nei_h.(M).Vse("RemMgmtAddr", "1"); ok {
+            if ifName, ok := port_h.(M).Vse("ifName"); ok {
+              if !dev.EvA("interfaces", ifName, "ip_neighbours") {
+                dev.VM("interfaces", ifName)["ip_neighbours"] = make([]string, 0)
+              }
+              dev.VM("interfaces", ifName)["ip_neighbours"] = StrAppendOnce(dev.VA("interfaces", ifName, "ip_neighbours").([]string), rem_ip)
+            }
+          }
           rcid := nei_h.(M).Vs("RemChassisId")
           rport_id := nei_h.(M).Vs("RemPortId")
           norm_matrix_id := l2l_key(dev.Vs("locChassisId"), port_h.(M).Vs("port_id"), rcid, rport_id)
@@ -818,7 +828,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   }
 
   //copy links from previous run and cleanup outdated
-  //if !startup && devs.EvM(dev_id, "interfaces") {
+  //if !startup && devs.EvM(dev_id, "interfaces") 
   if !startup && devs.EvM(dev_id) {
     for ifName, if_h := range devs.VM(dev_id, "interfaces") {
       if if_h.(M).EvA("l2_links") && dev.EvM("interfaces", ifName) {
@@ -1545,6 +1555,9 @@ if key == "ifOperStatus" && !debug_printed {
       }
     }
 
+  }
+
+  if ip_neighbours > 0 && ip_neighbours_rule != "" {
   }
 
   proc_time := time.Now().Sub(process_start)

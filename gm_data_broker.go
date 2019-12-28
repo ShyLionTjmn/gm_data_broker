@@ -66,6 +66,7 @@ var graph_int_watch_int []string
 var graph_int_watch_dev_ne []string
 var graph_int_watch_int_ne []string
 var alert_fields []string
+var ip_neighbours_rule string
 
 var aux_data_time int64
 
