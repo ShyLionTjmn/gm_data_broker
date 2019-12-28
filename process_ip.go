@@ -130,23 +130,7 @@ func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) (succ
 
   for _, field := range alert_fields {
     if new.EvA(field) && !m.EvA(field) {
-      v := new.VA(field)
-      switch v.(type) {
-      case string,int64,uint64:
-        m[field] = new.Vs(field)
-      case []string:
-        m[field] = strings.Join(v.([]string), ",")
-      case []int64:
-        str_a := make([]string, len(v.([]int64)))
-        for idx, val := range v.([]int64) { str_a[idx] = strconv.FormatInt(val, 10) }
-        m[field] = strings.Join(str_a, ",")
-      case []uint64:
-        str_a := make([]string, len(v.([]uint64)))
-        for idx, val := range v.([]uint64) { str_a[idx] = strconv.FormatUint(val, 10) }
-        m[field] = strings.Join(str_a, ",")
-      default:
-        m[field] = fmt.Sprint(v)
-      }
+      m[field] = AlertRuleFieldValue(new.VA(field))
     }
   }
 
@@ -164,23 +148,7 @@ func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) (succ
     m["new"] = fmt.Sprint(new.VA("interfaces", ifName, key))
     for _, field := range alert_fields {
       if new.EvA("interfaces", ifName, field) && !m.EvA(field) {
-        v := new.VA("interfaces", ifName, field)
-        switch v.(type) {
-        case string,int64,uint64:
-          m[field] = new.Vs("interfaces", ifName, field)
-        case []string:
-          m[field] = strings.Join(v.([]string), ",")
-        case []int64:
-          str_a := make([]string, len(v.([]int64)))
-          for idx, val := range v.([]int64) { str_a[idx] = strconv.FormatInt(val, 10) }
-          m[field] = strings.Join(str_a, ",")
-        case []uint64:
-          str_a := make([]string, len(v.([]uint64)))
-          for idx, val := range v.([]uint64) { str_a[idx] = strconv.FormatUint(val, 10) }
-          m[field] = strings.Join(str_a, ",")
-        default:
-          m[field] = fmt.Sprint(v)
-        }
+        m[field] = AlertRuleFieldValue(new.VA("interfaces", ifName, field))
       }
     }
   }
@@ -473,6 +441,10 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       }
     }
 
+    if startup && err == redis.ErrNil {
+      err = nil
+    }
+
     return
   }
 
@@ -481,7 +453,12 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   process_start := time.Now()
 
   err = device.Decode(raw)
-  if err != nil { return }
+  if err != nil {
+    if startup && err == redis.ErrNil {
+      err = nil
+    }
+    return
+  }
 
   now_unix := time.Now().Unix()
   now_unix_str := strconv.FormatInt(now_unix, 10)
@@ -687,6 +664,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
                 dev.VM("interfaces", ifName)["ip_neighbours"] = make([]string, 0)
               }
               dev.VM("interfaces", ifName)["ip_neighbours"] = StrAppendOnce(dev.VA("interfaces", ifName, "ip_neighbours").([]string), rem_ip)
+              ip_neighbours++
             }
           }
           rcid := nei_h.(M).Vs("RemChassisId")
@@ -1558,6 +1536,48 @@ if key == "ifOperStatus" && !debug_printed {
   }
 
   if ip_neighbours > 0 && ip_neighbours_rule != "" {
+    for ifName, int_m := range dev.VM("interfaces") {
+      int_h := int_m.(M)
+      if nei_s, ok := int_h.VAe("ip_neighbours"); ok {
+        m := make(map[string]string)
+        for _, field := range ip_neighbours_fields {
+          if _, found := m[field]; !found && dev.EvA(field) {
+            m[field] = AlertRuleFieldValue(dev.VA(field))
+          } else if _, found := m[field]; !found && dev.EvA("interfaces", ifName, field) {
+            m[field] = AlertRuleFieldValue(dev.VA("interfaces", ifName, field))
+          }
+        }
+        for _, nei_ip := range nei_s.([]string) {
+          m["neighbour_ip"] = nei_ip
+          _,ignore := ip_neighbours_ignored[nei_ip]
+          if !ignore && !data.EvM("dev_list", nei_ip) {
+            match, err := MatchAlertRule(ip_neighbours_rule, m)
+            if err == nil {
+              if match {
+                if opt_v > 1 {
+                  fmt.Println("IP neighbour:", ifName, nei_ip, "ADD")
+                }
+                if opt_n {
+                  red.Do("HSET", "dev_list", nei_ip, now_unix_str+":run")
+                }
+              } else {
+                if opt_v > 2 {
+                  fmt.Println("IP neighbour:", ifName, nei_ip, "NO MATCH")
+                }
+              }
+            } else {
+              if opt_v > 0 {
+                fmt.Println(err)
+              }
+            }
+          } else {
+            if opt_v > 2 {
+              fmt.Println("IP neighbour:", ifName, nei_ip, "SKIP")
+            }
+          }
+        }
+      }
+    }
   }
 
   proc_time := time.Now().Sub(process_start)

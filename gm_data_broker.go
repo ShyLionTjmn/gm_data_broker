@@ -67,6 +67,8 @@ var graph_int_watch_dev_ne []string
 var graph_int_watch_int_ne []string
 var alert_fields []string
 var ip_neighbours_rule string
+var ip_neighbours_fields []string
+var ip_neighbours_ignored map[string]struct{}
 
 var aux_data_time int64
 
@@ -75,6 +77,7 @@ var opt_Q bool
 var opt_1 bool
 var opt_v int
 var opt_l bool
+var opt_n bool
 
 const TRY_OPEN_FILES uint64=65536
 var max_open_files uint64
@@ -94,6 +97,7 @@ func init() {
   flag.BoolVar(&opt_Q, "Q", false, "ignore queue saves from gomapper")
   flag.BoolVar(&opt_1, "1", false, "startup and finish")
   flag.BoolVar(&opt_l, "l", false, "log link discovery and change")
+  flag.BoolVar(&opt_n, "n", false, "auto add ip Neighbours")
   flag.IntVar(&opt_v, "v", 0, "set verbosity level")
 
   flag.Parse()
@@ -336,6 +340,7 @@ func main() {
   var err error
   var sysoids_time string
   var alert_config_time string
+  var ip_neighbours_time string
 
   single_run := single.New("gm_data_broker."+red_db) // add redis_db here later
 
@@ -474,8 +479,26 @@ MAIN_LOOP:
             }
           }
           if err == nil {
+            alert_config_time = r_time
             globalMutex.Lock()
             alert_fields = new_fields
+            globalMutex.Unlock()
+          }
+        }
+      }
+      r_time, err = redis.String(red.Do("GET", "config.ip_neighbours.time"))
+      if err == nil && r_time != ip_neighbours_time {
+        var redstr string
+        redstr, err = redis.String(red.Do("GET", "config.ip_neighbours.rule"))
+        if err == nil {
+          var new_fields []string
+          new_fields, err = ParseAlertRule(redstr)
+          if err == nil {
+            globalMutex.Lock()
+            ip_neighbours_time = r_time
+            ip_neighbours_rule = redstr
+            ip_neighbours_fields = new_fields
+            ip_neighbours_ignored = make(map[string]struct{})
             globalMutex.Unlock()
           }
         }
