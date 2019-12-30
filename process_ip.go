@@ -933,6 +933,9 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
               delete(l2Matrix, matrix_id)
               delete(l2Matrix, alt_matrix_id)
 
+              delete(check_matrix, matrix_id)
+              delete(check_matrix, alt_matrix_id)
+
             }
           }
         }
@@ -948,7 +951,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
   for matrix_id, _ := range check_matrix {
     var if0_h M
     var if1_h M
-    matrix_h := l2Matrix.VM(matrix_id)
+    matrix_h, ex := l2Matrix.VMe(matrix_id)
     link_id := matrix_h.Vs("link_id")
 
     dev_refs.MkM(dev_id, "l2_links", link_id)
@@ -962,6 +965,15 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       if0_h = devs.VM(matrix_h.Vs("0", "DevId"), "interfaces", matrix_h.Vs("0", "ifName"))
       if1_h = dev.VM("interfaces", matrix_h.Vs("1", "ifName"))
       dev_refs.MkM(matrix_h.Vs("0", "DevId"), "l2_links", link_id)
+    }
+
+    if if0_h == nil {
+      fmt.Println("dev_id", dev_id)
+      fmt.Println("matrix_id", matrix_id)
+      fmt.Println("check_matrix.Vs(matrix_id)", check_matrix.Vs(matrix_id))
+      fmt.Println(ex)
+      fmt.Println(matrix_h)
+panic("Boo")
     }
 
     if !if0_h.EvA("l2_links") {
@@ -1124,10 +1136,13 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     dev["_graph_int_rules_time"] =  int64(0)
   }
 
+  reg_ip_dev_id := false
+
   if startup {
     dev["_status_alerted_value"] = status_alerted_value
     dev["_status_alerted_time"] = status_alerted_time
     devs[dev_id] = dev
+    reg_ip_dev_id = true
   } else {
     if old, ok := devs.VMe(dev_id); !ok {
       logger := &Logger{Conn: red, Dev: "nodev"}
@@ -1135,6 +1150,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       location, _ := dev.Vse("sysLocation")
       logger.Event("dev_new", "", "ip", ip, "short_name", dev.Vs("short_name"), "loc", location)
       logger.Save()
+      reg_ip_dev_id = true
     } else {
       dev["_graph_int_rules_time"] = old.Vi("_graph_int_rules_time")
 
@@ -1582,9 +1598,13 @@ if key == "ifOperStatus" && !debug_printed {
 
   proc_time := time.Now().Sub(process_start)
 
+  if reg_ip_dev_id && red != nil && red.Err() == nil {
+    red.Do("SET", "dev_ip."+dev_id, ip)
+    red.Do("SET", "ip_dev_id."+ip, dev_id)
+  }
+
   data.VM("dev_list", ip)["proc_result"] = "done in "+strconv.FormatInt(int64(proc_time/time.Millisecond), 10)+" ms"
   data.VM("dev_list", ip)["time"] = time.Now().Unix()
 
   red.Do("SET", "dev_last_seen."+dev_id, strconv.FormatInt(last_seen, 10)+":"+ip)
-  red.Do("SET", "ip_dev_id."+ip, dev_id)
 }
