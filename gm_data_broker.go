@@ -217,21 +217,21 @@ L66:  for !stop_signalled {
 func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
   req.ParseForm()
   globalMutex.RLock()
-  var j []byte
+  //var j []byte
   var err error
 
+  var out M
+
   if req.URL.Path == "/debug" || req.URL.Path == "/debug/" {
-    m := make(M)
-    m["data"] = data
-    m["l2Matrix"] = l2Matrix
-    j, err = json.MarshalIndent(m, "", "  ")
+    out = make(M)
+    out["data"] = data
+    out["l2Matrix"] = l2Matrix
   } else if req.URL.Path == "/refs" || req.URL.Path == "/refs/" {
-    j, err = json.MarshalIndent(dev_refs, "", "  ")
+    out = dev_refs
   } else if req.URL.Path == "/macs" {
-    m := make(M)
-    m["macs"]=devs_macs
-    m["arp"]=devs_arp
-    j, err = json.MarshalIndent(m, "", "  ")
+    out = make(M)
+    out["macs"]=devs_macs
+    out["arp"]=devs_arp
   } else if req.URL.Path == "/" {
     _, with_macs := req.Form["with_macs"]
     _, with_arp := req.Form["with_arp"]
@@ -244,11 +244,11 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
       short_name_regex, err = regexp.Compile(short_name_pattern)
     }
     if err == nil {
-      ret := make(M)
-      ret_devs := ret.MkM("devs")
+      out = make(M)
+      ret_devs := out.MkM("devs")
 
       if _, ok := req.Form["with_l2_links"]; ok {
-        ret["l2_links"] = data.VM("l2_links")
+        out["l2_links"] = data.VM("l2_links")
       }
 
       for dev_id, dev_m := range devs {
@@ -277,8 +277,6 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
           }
         }
       }
-
-      j, err = json.MarshalIndent(ret, "", "  ")
     }
 
   } else {
@@ -286,16 +284,23 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
     http.Error(w, "Not found", http.StatusNotFound)
     return
   }
-  globalMutex.RUnlock()
 
   if err != nil {
+    globalMutex.RUnlock()
     http.Error(w, err.Error(), http.StatusInternalServerError)
     return
   }
 
-  w.Header().Add("Content-Type", "text/javascript")
-  w.Write(j)
-  w.Write([]byte("\n"))
+  w.Header().Set("Content-Type", "text/javascript")
+  w.WriteHeader(http.StatusCreated)
+  enc := json.NewEncoder(w)
+
+  if _, indent := req.Form["indent"]; indent {
+    enc.SetIndent("", "  ")
+  }
+  enc.Encode(out)
+  //w.Write([]byte("\n"))
+  globalMutex.RUnlock()
 }
 
 

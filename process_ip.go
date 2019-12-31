@@ -1603,6 +1603,8 @@ if key == "ifOperStatus" && !debug_printed {
     red.Do("SET", "ip_dev_id."+ip, dev_id)
   }
 
+  red.Do("DEL", "ip_proc_error."+ip)
+
   data.VM("dev_list", ip)["proc_result"] = "done in "+strconv.FormatInt(int64(proc_time/time.Millisecond), 10)+" ms"
   data.VM("dev_list", ip)["time"] = time.Now().Unix()
 
