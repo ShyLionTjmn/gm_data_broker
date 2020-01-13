@@ -232,6 +232,120 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
     out = make(M)
     out["macs"]=devs_macs
     out["arp"]=devs_arp
+  } else if req.URL.Path == "/compact" {
+    _, with_macs := req.Form["with_macs"]
+    _, with_arp := req.Form["with_arp"]
+    out = make(M)
+    ret_devs := out.MkM("devs")
+
+    if _, ok := req.Form["with_l2_links"]; ok {
+      out_l2_links := out.MkM("l2_links")
+      if data.EvM("l2_links") {
+        for link_id, link_m := range data.VM("l2_links") {
+          out_l2_link_h := out_l2_links.MkM(link_id)
+          for _, leg := range []string{"0", "1"} {
+            if leg_h, ok := link_m.(M).VMe(leg); ok {
+              out_l2_link_leg_h := out_l2_link_h.MkM(leg)
+              for _, leg_key := range []string{"DevId", "ifName"} {
+                if key_val, ok := leg_h.VAe(leg_key); ok {
+                  out_l2_link_leg_h[leg_key] = key_val
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    for dev_id, dev_m := range devs {
+      dev_h := dev_m.(M)
+      out_dev_h := ret_devs.MkM(dev_id)
+
+      // copy scalar values and slices
+      for _, key := range []string{"data_ip", "dhcpSnoopingEnable", "dhcpSnoopingStatisticDropPktsNum", "dhcpSnoopingVlanEnable", "id", "last_seen", "memorySize", "memoryUsed",
+        "model_long", "model_short", "overall_status", "short_name", "sysContact", "sysDescr", "sysLocation", "sysObjectID", "sysUpTime", "sysUpTimeStr",
+        "CiscoConfChange", "CiscoConfSave",
+        "interfaces_sorted"} {
+        //for
+        if _a, ok := dev_h.VAe(key); ok {
+          out_dev_h[key] = _a
+        }
+      }
+
+      // link hashes
+      for _, key := range []string{"CPUs"} {
+        if _h, ok := dev_h.VMe(key); ok {
+          out_dev_h[key] = _h
+        }
+      }
+
+      if dev_h.EvM("interfaces") {
+        for ifName, if_m := range dev_h.VM("interfaces") {
+          if_h := if_m.(M)
+
+          out_if_h := out_dev_h.MkM("interfaces", ifName)
+
+          // copy scalar values and slices
+          for _, key := range []string{"ifAdminStatus", "ifAlias", "ifInCRCErrors", "ifIndex", "ifName", "ifOperStatus", "ifPhysAddr", "ifSpeed", "ifType", "ifHighSpeed",
+            "macs_count", "portHybridTag", "portHybridUntag", "portIndex", "portMode", "portPvid", "portTrunkVlans", "ifDelay",
+            "ip_neighbours", "l2_links"} {
+            //for
+            if _a, ok := if_h.VAe(key); ok {
+              out_if_h[key] = _a
+            }
+          }
+
+          // link hashes
+          for _, key := range []string{"ips"} {
+            //for
+            if _h, ok := if_h.VMe(key); ok {
+              out_if_h[key] = _h
+            }
+          }
+        }
+      }
+
+      if dev_h.EvM("lldp_ports") {
+        for portIndex, port_m := range dev_h.VM("lldp_ports") {
+          port_h := port_m.(M)
+
+          out_port_h := out_dev_h.MkM("lldp_ports", portIndex)
+
+/*
+          // copy scalar values and slices
+          for _, key := range []string{} {
+            //for
+            if _a, ok := port_h.VAe(key); ok {
+              out_port_h[key] = _a
+            }
+          }
+*/
+          // link neighbours
+          if nei_h, ok := port_h.VMe("neighbours"); ok {
+            out_nei_h := out_port_h.MkM("neighbours")
+            for nei_index, nei_m := range nei_h {
+              _ = out_nei_h.MkM(nei_index)
+              _ = nei_m.(M)
+            }
+          }
+        }
+      }
+
+      if with_macs && devs_macs.EvM(dev_id) {
+        for ifName, macs_m := range devs_macs.VM(dev_id) {
+          if if_h, ok := ret_devs.VMe(dev_id, "interfaces", ifName); ok {
+            if_h["macs"] = macs_m
+          }
+        }
+      }
+      if with_arp && devs_arp.EvM(dev_id) {
+        for ifName, arp_m := range devs_arp.VM(dev_id) {
+          if if_h, ok := ret_devs.VMe(dev_id, "interfaces", ifName); ok {
+            if_h["arp_table"] = arp_m
+          }
+        }
+      }
+    }
   } else if req.URL.Path == "/" {
     _, with_macs := req.Form["with_macs"]
     _, with_arp := req.Form["with_arp"]
