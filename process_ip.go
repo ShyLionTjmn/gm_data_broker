@@ -1148,7 +1148,7 @@ panic("Boo")
       logger := &Logger{Conn: red, Dev: "nodev"}
       devs[dev_id] = dev
       location, _ := dev.Vse("sysLocation")
-      logger.Event("dev_new", "", "ip", ip, "short_name", dev.Vs("short_name"), "loc", location)
+      logger.Event("dev_new", "", "ip", ip, "dev_id", dev_id, "short_name", dev.Vs("short_name"), "loc", location)
       logger.Save()
       reg_ip_dev_id = true
     } else {

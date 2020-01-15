@@ -232,6 +232,21 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
     out = make(M)
     out["macs"]=devs_macs
     out["arp"]=devs_arp
+  } else if req.URL.Path == "/command" {
+    command := req.Form.Get("command")
+    if command == "" {
+      out["error"] = "no command supplied"
+    } else if command == "delete_l2_link" {
+      link_id := req.Form.Get("link_id")
+      if link_id == "" {
+        out["error"] = "no link_id supplied"
+      } else {
+
+        out["ok"] = "done"
+      }
+    } else {
+      out["error"] = "unknown command supplied"
+    }
   } else if req.URL.Path == "/compact" {
     _, with_macs := req.Form["with_macs"]
     _, with_arp := req.Form["with_arp"]
