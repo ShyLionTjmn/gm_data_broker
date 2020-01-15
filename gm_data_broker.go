@@ -217,19 +217,18 @@ L66:  for !stop_signalled {
 func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
   req.ParseForm()
   globalMutex.RLock()
+
   //var j []byte
   var err error
 
-  var out M
+  out := make(M)
 
   if req.URL.Path == "/debug" || req.URL.Path == "/debug/" {
-    out = make(M)
     out["data"] = data
     out["l2Matrix"] = l2Matrix
   } else if req.URL.Path == "/refs" || req.URL.Path == "/refs/" {
     out = dev_refs
   } else if req.URL.Path == "/macs" {
-    out = make(M)
     out["macs"]=devs_macs
     out["arp"]=devs_arp
   } else if req.URL.Path == "/command" {
@@ -241,7 +240,53 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
       if link_id == "" {
         out["error"] = "no link_id supplied"
       } else {
+        globalMutex.RUnlock()
+        globalMutex.Lock()
 
+        if link_h, ok := data.VMe("l2_links", link_id); ok {
+          matrix_id := link_h.Vs("matrix_id")
+          alt_matrix_id := link_h.Vs("alt_matrix_id")
+          for _, leg := range []string{"0", "1"} {
+            ifName := link_h.Vs(leg, "ifName")
+            DevId := link_h.Vs(leg, "DevId")
+
+            if if_h, ok := devs.VMe(DevId, "interfaces", ifName); ok && if_h.EvA("l2_links") {
+              list := if_h.VA("l2_links").([]string)
+              new_list := make([]string, 0)
+              for _, l := range list {
+                if l != link_id {
+                  new_list = append(new_list, l)
+                }
+              }
+              if len(new_list) > 0 {
+                if_h["l2_links"] = new_list
+              } else {
+                delete(if_h, "l2_links")
+              }
+            }
+
+            if refs_h, ok := dev_refs.VMe(DevId, "l2_links"); ok {
+              delete(refs_h, link_id)
+              if len(refs_h) == 0 {
+                delete(dev_refs.VM(DevId), "l2_links")
+              }
+            }
+            if refs_h, ok := dev_refs.VMe(DevId, "l2Matrix"); ok {
+              delete(refs_h, matrix_id)
+              delete(refs_h, alt_matrix_id)
+              if len(refs_h) == 0 {
+                delete(dev_refs.VM(DevId), "l2Matrix")
+              }
+            }
+          }
+
+          delete(l2Matrix, matrix_id)
+          delete(l2Matrix, alt_matrix_id)
+          delete(data.VM("l2_links"), link_id)
+        }
+
+        globalMutex.Unlock()
+        globalMutex.RLock()
         out["ok"] = "done"
       }
     } else {
@@ -250,7 +295,6 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
   } else if req.URL.Path == "/compact" {
     _, with_macs := req.Form["with_macs"]
     _, with_arp := req.Form["with_arp"]
-    out = make(M)
     ret_devs := out.MkM("devs")
 
     if _, ok := req.Form["with_l2_links"]; ok {
@@ -258,6 +302,11 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
       if data.EvM("l2_links") {
         for link_id, link_m := range data.VM("l2_links") {
           out_l2_link_h := out_l2_links.MkM(link_id)
+          for _, key := range []string{"status"} {
+            if _a, ok := link_m.(M).VAe(key); ok {
+              out_l2_link_h[key] = _a
+            }
+          }
           for _, leg := range []string{"0", "1"} {
             if leg_h, ok := link_m.(M).VMe(leg); ok {
               out_l2_link_leg_h := out_l2_link_h.MkM(leg)
@@ -373,7 +422,6 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
       short_name_regex, err = regexp.Compile(short_name_pattern)
     }
     if err == nil {
-      out = make(M)
       ret_devs := out.MkM("devs")
 
       if _, ok := req.Form["with_l2_links"]; ok {

@@ -1018,48 +1018,50 @@ panic("Boo")
 
   if dev.EvM("interfaces") {
     for ifName, if_m := range dev.VM("interfaces") {
-      if ips, ok := if_m.(M).VMe("ips"); ok {
-        for if_ip, if_ip_m := range ips {
-          if net, ok := if_ip_m.(M).Vse("net"); ok {
-            register := false
-            if l3link_ip_h, ok := data.VMe("l3_links", net, if_ip); ok {
-              link_dev_id := l3link_ip_h.Vs("dev_id")
-              if link_dev_id != dev_id || l3link_ip_h.Vs("ifName") != ifName {
-                if startup {
-                  color.Red("IP conflict: %s, %s vs %s", if_ip, dev_id, link_dev_id)
-                } else {
-                  if devs.EvM(link_dev_id) && devs.Vs(link_dev_id, "overall_status") == "ok" &&
-                     (link_dev_id != dev_id || l3link_ip_h.Vi("time") == now_unix) {
-                    //if
-                    if opt_v > 1 {
-                      color.Red("IP conflict: %s, %s vs %s", if_ip, dev_id, link_dev_id)
-                    }
+      if astatus, ok := if_m.(M).Vse("ifAdminStatus"); ok && astatus == "1" {
+        if ips, ok := if_m.(M).VMe("ips"); ok {
+          for if_ip, if_ip_m := range ips {
+            if net, ok := if_ip_m.(M).Vse("net"); ok && if_ip != "127.0.0.1" {
+              register := false
+              if l3link_ip_h, ok := data.VMe("l3_links", net, if_ip); ok {
+                link_dev_id := l3link_ip_h.Vs("dev_id")
+                if link_dev_id != dev_id || l3link_ip_h.Vs("ifName") != ifName {
+                  if startup {
+                    color.Red("IP conflict: %s, %s @ %s vs %s @ %s", if_ip, dev_id, ifName, link_dev_id, l3link_ip_h.Vs("ifName"))
                   } else {
-                    //overwrite data
-                    if dev_refs.EvM(link_dev_id, "l3_links", net) {
-                      delete(dev_refs.VM(link_dev_id, "l3_links", net), if_ip)
-                      if len(dev_refs.VM(link_dev_id, "l3_links", net)) == 0 {
-                        delete(dev_refs.VM(link_dev_id, "l3_links"), net)
+                    if devs.EvM(link_dev_id) && devs.Vs(link_dev_id, "overall_status") == "ok" &&
+                       (link_dev_id != dev_id || l3link_ip_h.Vi("time") == now_unix) {
+                      //if
+                      if opt_v > 1 {
+                        color.Red("IP conflict: %s, %s @ %s vs %s @ %s", if_ip, dev_id, ifName, link_dev_id, l3link_ip_h.Vs("ifName"))
                       }
-                      if len(dev_refs.VM(link_dev_id, "l3_links")) == 0 {
-                        delete(dev_refs.VM(link_dev_id), "l3_links")
+                    } else {
+                      //overwrite data
+                      if dev_refs.EvM(link_dev_id, "l3_links", net) {
+                        delete(dev_refs.VM(link_dev_id, "l3_links", net), if_ip)
+                        if len(dev_refs.VM(link_dev_id, "l3_links", net)) == 0 {
+                          delete(dev_refs.VM(link_dev_id, "l3_links"), net)
+                        }
+                        if len(dev_refs.VM(link_dev_id, "l3_links")) == 0 {
+                          delete(dev_refs.VM(link_dev_id), "l3_links")
+                        }
                       }
+                      register = true
                     }
-                    register = true
                   }
+                } else {
+                  register = true
                 }
               } else {
                 register = true
               }
-            } else {
-              register = true
-            }
-            if register {
-              l3link_ip_h := data.MkM("l3_links", net, if_ip)
-              l3link_ip_h["dev_id"] = dev_id
-              l3link_ip_h["ifName"] = ifName
-              l3link_ip_h["time"] = now_unix
-              dev_refs.MkM(dev_id, "l3_links", net, if_ip)
+              if register {
+                l3link_ip_h := data.MkM("l3_links", net, if_ip)
+                l3link_ip_h["dev_id"] = dev_id
+                l3link_ip_h["ifName"] = ifName
+                l3link_ip_h["time"] = now_unix
+                dev_refs.MkM(dev_id, "l3_links", net, if_ip)
+              }
             }
           }
         }
