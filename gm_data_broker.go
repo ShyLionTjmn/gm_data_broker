@@ -713,6 +713,12 @@ MAIN_LOOP:
         if fast_start { wg_.Wait() }
         redis_loaded = true
 
+        globalMutex.Lock()
+        for _, dev_m := range devs {
+          ip_debug, _ := redis.String(red.Do("GET", "ip_debug."+dev_m.(M).Vs("data_ip")))
+          processLinks(dev_m.(M), true, ip_debug)
+        }
+        globalMutex.Unlock()
       }
     }
 
