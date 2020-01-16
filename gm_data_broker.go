@@ -416,6 +416,7 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
     var short_name_regex *regexp.Regexp
     short_name_pattern := req.Form.Get("match_short_name")
     by_dev_id := req.Form.Get("dev_id")
+    by_dev_ip := req.Form.Get("dev_ip")
     by_safe_dev_id := req.Form.Get("safe_dev_id")
     err = nil
     if short_name_pattern != "" {
@@ -433,6 +434,7 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
         safe_dev_id := SafeDevId(dev_id)
         if (short_name_pattern == "" || short_name_regex.MatchString(dev_h.Vs("short_name"))) &&
            (by_dev_id == "" || by_dev_id == dev_id) &&
+           (by_dev_ip == "" || by_dev_ip == dev_h.Vs("data_ip")) &&
            (by_safe_dev_id == "" || by_safe_dev_id == safe_dev_id) &&
            true {
           //if
