@@ -508,8 +508,28 @@ func processLinks(dev M, startup bool, debug string) {
                    false {
                   //if
                   keep_link = true
-                  matrix_h["status"] = int64(1)
-                  link_h["status"] = int64(1)
+                  if (creator == dev_id &&
+                      dev.Vs("overall_status") == "ok" &&
+                      dev.Vi("interfaces", l0_ifName, "ifOperStatus") == 1 &&
+                      devs.Vs(l1_devId, "overall_status") == "ok" &&
+                      devs.Vi(l1_devId, "interfaces", l1_ifName, "ifOperStatus") == 1) ||
+                     (creator != dev_id &&
+                      dev.Vs("overall_status") == "ok" &&
+                      dev.Vi("interfaces", l1_ifName, "ifOperStatus") == 1 &&
+                      devs.Vs(creator, "overall_status") == "ok" &&
+                      devs.Vi(creator, "interfaces", l0_ifName, "ifOperStatus") == 1) ||
+                     false {
+                    //if
+                    matrix_h["status"] = int64(1)
+                    link_h["status"] = int64(1)
+                  } else {
+                    if link_h.Vi("status") != 2 {
+                      went_down = true
+                    }
+                    matrix_h["status"] = int64(2)
+                    link_h["status"] = int64(2)
+                  }
+
                 } else if (creator == dev_id &&
                            len(if_h.(M).VA("l2_links").([]string)) == 1 &&
                            len(devs.VA(l1_devId, "interfaces", l1_ifName, "l2_links").([]string)) == 1 &&
@@ -522,7 +542,7 @@ func processLinks(dev M, startup bool, debug string) {
                            len(if_h.(M).VA("l2_links").([]string)) == 1 &&
                            len(devs.VA(creator, "interfaces", l0_ifName, "l2_links").([]string)) == 1 &&
                            (dev.Vs("overall_status") != "ok" ||
-                            dev.Vi("interfaces", l0_ifName, "ifOperStatus") == 2 ||
+                            dev.Vi("interfaces", l1_ifName, "ifOperStatus") == 2 ||
                             devs.Vs(creator, "overall_status") != "ok" ||
                             devs.Vi(creator, "interfaces", l0_ifName, "ifOperStatus") == 2 ||
                             false)) ||
