@@ -10,6 +10,8 @@ import (
   "strconv"
   "sort"
   "reflect"
+  "runtime"
+  "path"
   "encoding/json"
 
   "github.com/gomodule/redigo/redis"
@@ -314,26 +316,33 @@ func debugPub(red redis.Conn, dev_ip string, debug string, key string, message s
   if red == nil || red.Err() != nil { return }
   if debug == "" { return }
   if key != "" && strings.Index(debug, key) >= 0 {
+    _, fileName, fileLine, ok := runtime.Caller(1)
+    var file_line string
+    if ok {
+      file_line = fmt.Sprintf("%s:%d", path.Base(fileName), fileLine)
+    }
     //if
-    red.Do("PUBLISH", "debug", fmt.Sprint(time.Now().Format("2006.01.02 15:04:05.000 "), dev_ip, " ", key, " ", message))
-    red.Do("PUBLISH", "debug_gm_data_broker", fmt.Sprint(time.Now().Format("2006.01.02 15:04:05.000 "), dev_ip, " ", key, " ", message))
+    red.Do("PUBLISH", "debug", fmt.Sprint(time.Now().Format("2006.01.02 15:04:05.000 "), file_line, " ", dev_ip, " ", key, " ", message))
+    red.Do("PUBLISH", "debug_gm_data_broker", fmt.Sprint(time.Now().Format("2006.01.02 15:04:05.000 "), file_line, " ", dev_ip, " ", key, " ", message))
   }
 }
 
-func processLinks(dev M, startup bool, debug string) {
+func processLinks(red redis.Conn, dev M, startup bool, debug string) {
 
   check_matrix := make(M)
 
   dev_id := dev.Vs("id")
+  ip := dev.Vs("data_ip")
   last_seen := dev.VA("last_seen")
 
   // build l2 neighbour matrix
   if dev.EvM("lldp_ports") && dev.Evs("locChassisId") {
 
-//debugPub(red, ip, debug, "l2matrix", "begin")
+    debugPub(red, ip, debug, "l2matrix", "begin")
 
     for port_index, port_h := range dev.VM("lldp_ports") {
       if port_h.(M).EvM("neighbours") {
+        debugPub(red, ip, debug, "l2matrix", fmt.Sprint("port: ", port_index, " ifName: ", port_h.(M).Vs("ifName")))
         for _, nei_h := range port_h.(M).VM("neighbours") {
           rcid := nei_h.(M).Vs("RemChassisId")
           rport_id := nei_h.(M).Vs("RemPortId")
@@ -352,14 +361,22 @@ func processLinks(dev M, startup bool, debug string) {
           var matrix_h M
           var pass = 0
 
+          debugPub(red, ip, debug, "l2matrix", fmt.Sprint("rcid: ", rcid, "rport_id: ", rport_id))
+          debugPub(red, ip, debug, "l2matrix", fmt.Sprint("matrix_id: ", matrix_id))
+
           if l2Matrix.EvM(matrix_id) {
+            debugPub(red, ip, debug, "l2matrix", fmt.Sprint("matrix_id exists"))
             matrix_h = l2Matrix.VM(matrix_id)
+            debugPub(red, ip, debug, "l2matrix", fmt.Sprint("matrix creator: ", matrix_h.Vs("_creator")))
             if matrix_h.Vs("_creator") != dev_id {
+              debugPub(red, ip, debug, "l2matrix", fmt.Sprint("created by other"))
 
               prev_complete := matrix_h.Vi("_complete")
               //reset its status
               matrix_h["status"] = int64(2)
               matrix_h["_complete"] = int64(0)
+
+              debugPub(red, ip, debug, "l2matrix", fmt.Sprint("status set to 2"))
 
               // we did not create it
               leg1_h := matrix_h.VM("1")
@@ -371,24 +388,32 @@ func processLinks(dev M, startup bool, debug string) {
               matrix_h["link_id"] = l2l_key(matrix_h.Vs("0", "DevId"), matrix_h.Vs("0", "PortIndex"), matrix_h.Vs("1", "DevId"), matrix_h.Vs("1", "PortIndex"))
 
               if port_h.(M).Evs("ifName") {
+                debugPub(red, ip, debug, "l2matrix", fmt.Sprint("port ifName is set"))
                 leg1_h["ifName"] = port_h.(M).Vs("ifName")
                 if matrix_h.Evs("0", "ifName") {
                   rifname := matrix_h.Vs("0", "ifName")
                   rdevid := matrix_h.Vs("0", "DevId")
 
+                  debugPub(red, ip, debug, "l2matrix", fmt.Sprint("leg 0 port ifName is set: ", rifname))
+                  debugPub(red, ip, debug, "l2matrix", fmt.Sprint("leg 0 DevId is set: ", rdevid))
+
                   if devs.EvM(rdevid, "interfaces", rifname) &&
                      matrix_h.Vi("_time") == devs.Vi(rdevid, "last_seen") {
                     // if
                     matrix_h["_complete"] = int64(1)
+                    debugPub(red, ip, debug, "l2matrix", fmt.Sprint("set to complete"))
                     if dev.Vi("interfaces", port_h.(M).Vs("ifName"), "ifOperStatus") == 1 && dev.Vs("overall_status") == "ok" &&
                        devs.Vi(rdevid, "interfaces", rifname, "ifOperStatus") == 1 && devs.Vs(rdevid, "overall_status") == "ok" {
                       matrix_h["status"] = int64(1)
+                      debugPub(red, ip, debug, "l2matrix", fmt.Sprint("status set to 1"))
                     }
                     check_matrix[matrix_id] = rdevid
                     if opt_l {
                       if prev_complete == 1 {
+                        debugPub(red, ip, debug, "l2matrix", fmt.Sprint("updateed by meeting"))
                         color.HiBlack("link updateed by meeting: %s", matrix_h.Vs("link_id"))
                       } else {
+                        debugPub(red, ip, debug, "l2matrix", fmt.Sprint("established by meeting"))
                         color.Green("link established by meeting: %s", matrix_h.Vs("link_id"))
                       }
                     }
@@ -396,15 +421,21 @@ func processLinks(dev M, startup bool, debug string) {
                 }
               }
 
+              debugPub(red, ip, debug, "l2matrix", fmt.Sprint("continute to next neighbour"))
+              debugPub(red, ip, debug, "l2matrix", fmt.Sprint(""))
               continue
             } else {
+              debugPub(red, ip, debug, "l2matrix", fmt.Sprint("created by us"))
               pass++
             }
 
           } else {
+            debugPub(red, ip, debug, "l2matrix", fmt.Sprint("matrix_id does not exists, creating: ", norm_matrix_id))
             matrix_h = l2Matrix.MkM(norm_matrix_id)
             dev_refs.MkM(dev_id, "l2Matrix", norm_matrix_id)
           }
+
+          debugPub(red, ip, debug, "l2matrix", fmt.Sprint("we are creator"))
 
           matrix_h["_creator"] = dev_id
           matrix_h["_complete"] = int64(0)
@@ -438,26 +469,46 @@ func processLinks(dev M, startup bool, debug string) {
 
           nei_dev_id, nei_port_index, nei_ifname, nei_error := leg_nei(leg1_h)
 
+          debugPub(red, ip, debug, "l2matrix", fmt.Sprint("leg_nei: ", nei_dev_id, " ", nei_port_index, " ", nei_ifname, " ", nei_error))
+
+          if nei_error == legNeiErrNoPi {
+            var json_str string
+            json_b, jerr := json.MarshalIndent(leg1_h, "", "  ")
+            if jerr != nil {
+              json_str = jerr.Error()
+            } else {
+              json_str = string(json_b)
+            }
+            debugPub(red, ip, debug, "l2matrix", fmt.Sprint("leg1_h: \n", json_str))
+          }
+
           if nei_error != legNeiErrNoDev && nei_error != legNeiErrNoPi {
+            debugPub(red, ip, debug, "l2matrix", fmt.Sprint("set DevId and PortIndex for leg 1"))
             leg1_h["DevId"] = nei_dev_id
             dev_refs.MkM(nei_dev_id, "l2Matrix", norm_matrix_id)
             leg1_h["PortIndex"] = nei_port_index
             matrix_h["link_id"] = l2l_key(matrix_h.Vs("0", "DevId"), matrix_h.Vs("0", "PortIndex"), matrix_h.Vs("1", "DevId"), matrix_h.Vs("1", "PortIndex"))
             if nei_error != legNeiErrNoIfName {
               leg1_h["ifName"] = nei_ifname
+              debugPub(red, ip, debug, "l2matrix", fmt.Sprint("set ifName for leg 1"))
               if port_h.(M).Evs("ifName") {
 
-                if port_h.(M).Evs("ifName") &&
-                   dev.Vi("interfaces", port_h.(M).Vs("ifName"), "ifOperStatus") == 1 && dev.Vs("overall_status") == "ok" &&
+                debugPub(red, ip, debug, "l2matrix", fmt.Sprint("set to complete"))
+                if dev.Vi("interfaces", port_h.(M).Vs("ifName"), "ifOperStatus") == 1 && dev.Vs("overall_status") == "ok" &&
                    devs.Vi(nei_dev_id, "interfaces", nei_ifname, "ifOperStatus") == 1 && devs.Vs(nei_dev_id, "overall_status") == "ok" {
                   matrix_h["status"] = int64(1)
+                  debugPub(red, ip, debug, "l2matrix", fmt.Sprint("status set to 1"))
+                } else {
+                  debugPub(red, ip, debug, "l2matrix", fmt.Sprint("status set to 2"))
                 }
                 matrix_h["_complete"] = int64(1)
                 check_matrix[norm_matrix_id] = dev_id
                 if opt_l {
                   if pass == 0 {
+                    debugPub(red, ip, debug, "l2matrix", fmt.Sprint("established by creator"))
                     color.Green("link established by creator: %s", matrix_h.Vs("link_id"))
                   } else {
+                    debugPub(red, ip, debug, "l2matrix", fmt.Sprint("updated by creator"))
                     color.HiBlack("link updated by creator: %s", matrix_h.Vs("link_id"))
                   }
                 }
@@ -475,7 +526,10 @@ func processLinks(dev M, startup bool, debug string) {
             if alt_matrix_h.Evs("1", "Dev_id") {
               dev_refs.MkM(alt_matrix_h.Vs("1", "Dev_id"), "l2Matrix", alt_matrix_id)
             }
+            debugPub(red, ip, debug, "l2matrix", fmt.Sprint("adding alt_matrix_id: ", alt_matrix_id))
           }
+          debugPub(red, ip, debug, "l2matrix", fmt.Sprint("continute to next neighbour"))
+          debugPub(red, ip, debug, "l2matrix", fmt.Sprint(""))
         }
       }
     }
@@ -1057,7 +1111,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     dev["model_long"] = "Unknown"
   }
 
-  processLinks(dev, startup, debug)
+  processLinks(red, dev, startup, debug)
 
   if dev.EvM("interfaces") {
     for ifName, if_m := range dev.VM("interfaces") {

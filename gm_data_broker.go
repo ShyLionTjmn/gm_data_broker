@@ -27,7 +27,7 @@ import (
   . "github.com/ShyLionTjmn/aux"
   . "github.com/ShyLionTjmn/gomapper_aux"
   "github.com/ShyLionTjmn/redsub"
-  "github.com/ShyLionTjmn/redmutex"
+  //"github.com/ShyLionTjmn/redmutex"
 
 )
 
@@ -74,6 +74,7 @@ var aux_data_time int64
 
 
 var opt_Q bool
+var opt_P bool
 var opt_1 bool
 var opt_v int
 var opt_l bool
@@ -95,6 +96,7 @@ func init() {
   ip_reg = regexp.MustCompile(IP_REGEX)
 
   flag.BoolVar(&opt_Q, "Q", false, "ignore queue saves from gomapper")
+  flag.BoolVar(&opt_P, "P", false, "No periodic status update for outdated devs")
   flag.BoolVar(&opt_1, "1", false, "startup and finish")
   flag.BoolVar(&opt_l, "l", false, "log link discovery and change")
   flag.BoolVar(&opt_n, "n", false, "auto add ip Neighbours")
@@ -283,11 +285,13 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
           delete(l2Matrix, matrix_id)
           delete(l2Matrix, alt_matrix_id)
           delete(data.VM("l2_links"), link_id)
+          out["ok"] = "done"
+        } else {
+          out["warn"] = "no link"
         }
 
         globalMutex.Unlock()
         globalMutex.RLock()
-        out["ok"] = "done"
       }
     } else {
       out["error"] = "unknown command supplied"
@@ -716,7 +720,7 @@ MAIN_LOOP:
         globalMutex.Lock()
         for _, dev_m := range devs {
           ip_debug, _ := redis.String(red.Do("GET", "ip_debug."+dev_m.(M).Vs("data_ip")))
-          processLinks(dev_m.(M), true, ip_debug)
+          processLinks(red, dev_m.(M), true, ip_debug)
         }
         globalMutex.Unlock()
       }
@@ -768,7 +772,7 @@ MAIN_LOOP:
       }
       continue MAIN_LOOP
     case <- main_timer.C:
-      if redis_loaded && red != nil && red.Err() == nil {
+      if redis_loaded && red != nil && red.Err() == nil && !opt_P{
         if opt_v > 2 {
           fmt.Println("main timer: cleanup and status check")
         }
@@ -815,7 +819,8 @@ MAIN_LOOP:
 
         now_unix := time.Now().Unix()
 
-L466:   for dev_id, _ := range devs {
+//L466:   for dev_id, _ := range devs {
+        for dev_id, _ := range devs {
           ip := devs.Vs(dev_id, "data_ip")
           //check if dev ip is not in lists
           if _, ok := dev_map[ip]; !ok || !data.EvM("dev_list", ip) {
@@ -834,8 +839,11 @@ L466:   for dev_id, _ := range devs {
             }*/
             if gomapper_run > 90 && (now_unix - devs.Vi(dev_id, "last_seen")) > WARN_AGE &&
                     (now_unix - dev_map.Vi(ip, "time")) > 90 && dev_map.Vs(ip, "state") == "run" {
+              wg.Add(1)
+              go process_ip_data(&wg, ip, false)
               // if
               //var last_status = devs.Vs(dev_id, "overall_status")
+/*
               var new_status string="warn"
               if (now_unix - devs.Vi(dev_id, "last_seen")) > DEAD_AGE {
                 new_status = "error"
@@ -901,6 +909,7 @@ L466:   for dev_id, _ := range devs {
                 alerter.Save()
                 logger.Save()
               }
+*/
             }
           }
         }
