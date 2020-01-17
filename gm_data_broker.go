@@ -356,7 +356,7 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
           // copy scalar values and slices
           for _, key := range []string{"ifAdminStatus", "ifAlias", "ifInCRCErrors", "ifIndex", "ifName", "ifOperStatus", "ifPhysAddr", "ifSpeed", "ifType", "ifHighSpeed",
             "macs_count", "portHybridTag", "portHybridUntag", "portIndex", "portMode", "portPvid", "portTrunkVlans", "ifDelay",
-            "ip_neighbours", "l2_links"} {
+            "ip_neighbours", "l2_links", "stpBlockInstances" } {
             //for
             if _a, ok := if_h.VAe(key); ok {
               out_if_h[key] = _a

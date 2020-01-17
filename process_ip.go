@@ -196,7 +196,7 @@ func leg_nei(leg M) (dev_id string, port_index string, if_name string, err error
 
   if dev_h == nil {
     err = legNeiErrNoDev
-  } else if dev_h.Evi("locChassisIdSubtype") && dev_h.Vi("locChassisIdSubtype") == chidst &&
+  } else if dev_h.EvA("locChassisIdSubtype") && dev_h.Vi("locChassisIdSubtype") == chidst &&
      dev_h.Evs("lldp_id2port_index", pid) &&
      dev_h.Vi("lldp_ports", dev_h.Vs("lldp_id2port_index", pid), "subtype") == pidst &&
      pidst == 7 {
@@ -207,7 +207,7 @@ func leg_nei(leg M) (dev_id string, port_index string, if_name string, err error
     } else {
       if_name = dev_h.Vs("lldp_ports", port_index, "ifName")
     }
-  } else if dev_h.Evi("locChassisIdSubtype") && dev_h.Vi("locChassisIdSubtype") == chidst &&
+  } else if dev_h.EvA("locChassisIdSubtype") && dev_h.Vi("locChassisIdSubtype") == chidst &&
             pidst == 5 && dev_h.Evs("interfaces", pid, "portIndex") {
     //else if
     port_index = dev_h.Vs("interfaces", pid, "portIndex")
@@ -479,7 +479,20 @@ func processLinks(red redis.Conn, dev M, startup bool, debug string) {
             } else {
               json_str = string(json_b)
             }
+            leg := leg1_h
             debugPub(red, ip, debug, "l2matrix", fmt.Sprint("leg1_h: \n", json_str))
+            debug_dev_id := "lldp:"+strings.ToLower(leg.Vs("ChassisId"))
+            debug_dev_h := devs.VM(debug_dev_id)
+            debug_chidst := leg.Vi("ChassisIdSubtype")
+            debug_pid := leg.Vs("PortId")
+            debug_pidst := leg.Vi("PortIdSubtype")
+
+            debugPub(red, ip, debug, "l2matrix", fmt.Sprint("dev_h.Vi('locChassisIdSubtype') == chidst : ", debug_dev_h.EvA("locChassisIdSubtype") && debug_dev_h.Vi("locChassisIdSubtype") == debug_chidst))
+            debugPub(red, ip, debug, "l2matrix", fmt.Sprint("dev_h.EvA('locChassisIdSubtype') : ", debug_dev_h.EvA("locChassisIdSubtype") ))
+            debugPub(red, ip, debug, "l2matrix", fmt.Sprint("dev_h.Vi('locChassisIdSubtype') vs chidst : ", debug_dev_h.Vi("locChassisIdSubtype"), " : ", debug_chidst))
+            debugPub(red, ip, debug, "l2matrix", fmt.Sprint("dev_h.Evs('lldp_id2port_index', pid) : ", debug_dev_h.Evs("lldp_id2port_index", debug_pid)))
+            debugPub(red, ip, debug, "l2matrix", fmt.Sprint("dev_h.Vi('lldp_ports', dev_h.Vs('lldp_id2port_index', pid), 'subtype') == pidst : ", debug_dev_h.Vi("lldp_ports", debug_dev_h.Vs("lldp_id2port_index", debug_pid), "subtype") == debug_pidst))
+            debugPub(red, ip, debug, "l2matrix", fmt.Sprint("pidst == 7 : ", debug_pidst == 7))
           }
 
           if nei_error != legNeiErrNoDev && nei_error != legNeiErrNoPi {
