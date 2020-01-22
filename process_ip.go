@@ -172,6 +172,13 @@ func (a *Alerter) Alert(new M, old interface{}, ifName string, key string) (succ
           success = false
         }
       }
+
+      if a.Conn.Err() == nil {
+        if key == "overall_status" {
+          a.Conn.Do("RPUSH", "alert.overall_status", j)
+        }
+        a.Conn.Do("PUBLISH", "alert.debug", time.Now().String()+" "+string(j))
+      }
     }
   }
   return
@@ -181,6 +188,7 @@ func (a *Alerter) Save() {
   if a.Conn != nil && a.Conn.Err() == nil && a.Count > 0 {
     a.Count = 0
     a.Conn.Do("LTRIM", "alert", -ALERT_MAX_EVENTS, -1)
+    a.Conn.Do("LTRIM", "alert.overall_status", -ALERT_MAX_EVENTS, -1)
     a.Conn.Do("PUBLISH", "alert.poke", time.Now().String())
   }
 }
