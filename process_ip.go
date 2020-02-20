@@ -723,6 +723,11 @@ func processLinks(red redis.Conn, dev M, startup bool, debug string) {
     var if0_h M
     var if1_h M
     matrix_h, ex := l2Matrix.VMe(matrix_id)
+
+    if !ex {
+      continue
+    }
+
     link_id := matrix_h.Vs("link_id")
 
     dev_refs.MkM(dev_id, "l2_links", link_id)
