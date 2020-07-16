@@ -31,8 +31,8 @@ import (
 
 )
 
-const WARN_AGE=300
-const DEAD_AGE=600
+//const WARN_AGE=300
+const DEAD_AGE=300
 
 const DB_REFRESH_TIME= 10
 const DB_ERROR_TIME= 5
@@ -837,79 +837,12 @@ MAIN_LOOP:
               fmt.Println("\tdev_list time age:", now_unix - dev_map.Vi(ip, "time"))
               fmt.Println("\tdev_list state:", dev_map.Vs(ip, "state"))
             }*/
-            if gomapper_run > 90 && (now_unix - devs.Vi(dev_id, "last_seen")) > WARN_AGE &&
+            // Process ip data to generte WARN/ERROR status
+            //if gomapper_run > 90 && (now_unix - devs.Vi(dev_id, "last_seen")) > WARN_AGE &&
+            if gomapper_run > 90 && (now_unix - devs.Vi(dev_id, "last_seen")) > DEAD_AGE &&
                     (now_unix - dev_map.Vi(ip, "time")) > 90 && dev_map.Vs(ip, "state") == "run" {
               wg.Add(1)
               go process_ip_data(&wg, ip, false)
-              // if
-              //var last_status = devs.Vs(dev_id, "overall_status")
-/*
-              var new_status string="warn"
-              if (now_unix - devs.Vi(dev_id, "last_seen")) > DEAD_AGE {
-                new_status = "error"
-              }
-
-              last_alert_status, _ := devs.Vse(dev_id, "_status_alerted_value")
-              if last_alert_status != new_status {
-
-                redm := redmutex.New(fmt.Sprintf("ip_lock.%s", ip))
-                err = redm.Lock(red, time.Second, 10*time.Second)
-                if err != nil { continue L466 }
-
-
-                var queues_map map[string]string
-                queues_map, err = redis.StringMap(red.Do("HGETALL", "ip_queues."+ip))
-                if err != nil {
-                  redm.Unlock(red)
-                  continue L466
-                }
-
-                last_error := ""
-
-                for q, _ := range queues_map {
-                  var lr string
-                  lr, err = redis.String(red.Do("GET", "ip_last_result."+q+"."+ip))
-                  if err != nil {
-                    redm.Unlock(red)
-                    continue L466
-                  }
-
-                  var res string
-                  var queue_error string
-
-                  res, _, _, queue_error, err = LastResultDecode(lr)
-                  if err != nil {
-                    redm.Unlock(red)
-                    continue L466
-                  }
-
-                  if res != "ok" {
-                    if last_error == "" {
-                      last_error = queue_error
-                    } else if strings.Index(last_error, queue_error) < 0 {
-                      last_error += ", "+queue_error
-                    }
-                  }
-                }
-                redm.Unlock(red)
-
-                devs.VM(dev_id)["overall_status"] = new_status
-                devs.VM(dev_id)["last_error"] = last_error
-
-                alerter := &Alerter{Conn: red}
-                logger := &Logger{Conn: red, Dev: dev_id}
-
-                logger.Event("key_change", "overall_status", "old_value", last_alert_status, "new_value", new_status)
-
-                if alerter.Alert(devs.VM(dev_id), last_alert_status, "", "overall_status") {
-                  devs.VM(dev_id)["_status_alerted_value"] = new_status
-                  devs.VM(dev_id)["_status_alerted_time"] = now_unix
-                }
-
-                alerter.Save()
-                logger.Save()
-              }
-*/
             }
           }
         }

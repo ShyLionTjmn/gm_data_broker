@@ -1010,11 +1010,10 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     save_time = 0
   }
 
-/*
-  if (time.Now().Unix() - last_seen) > WARN_AGE && overall_status == "ok" {
-    overall_status = "warn"
-  }
-*/
+//  if (time.Now().Unix() - last_seen) > WARN_AGE && overall_status == "ok" {
+//    overall_status = "warn"
+//  }
+
   dev["overall_status"] = overall_status
   dev["last_error"] = last_error
   dev["save_time"] = save_time
@@ -1121,10 +1120,10 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     last_seen = save_time
   }
 
-  if overall_status == "error" && (now_unix - last_seen) < DEAD_AGE {
-    overall_status = "warn"
-    dev["overall_status"] = overall_status
-  }
+//  if overall_status == "error" && (now_unix - last_seen) < DEAD_AGE {
+//    overall_status = "warn"
+//    dev["overall_status"] = overall_status
+//  }
 
   dev["last_seen"] = last_seen
   // process links
