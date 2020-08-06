@@ -975,6 +975,8 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
 
   has_errors := false
 
+  duration_h := dev.MkM("_queue_duration")
+
   for _, q := range queue_list.([]string) {
     if !dev.Evs("_last_result", q) {
       err = errors.New("No _last_result for queue "+q)
@@ -984,11 +986,15 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     lr := dev.Vs("_last_result", q)
 
     var res string
+    var queue_start int64
     var queue_save_time int64
     var queue_error string
 
-    res, _, queue_save_time, queue_error, err = LastResultDecode(lr)
+    res, queue_start, queue_save_time, queue_error, err = LastResultDecode(lr)
     if err != nil { return }
+
+    duration_h[q] = queue_save_time - queue_start
+
     if res != "ok" {
       has_errors = true
       if overall_status == "ok" {
