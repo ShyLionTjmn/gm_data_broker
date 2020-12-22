@@ -1390,6 +1390,8 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
       for ifName, _ := range dev.VM("interfaces") {
         if !old.EvM("interfaces", ifName) {
           logger.Event("if_new", ifName)
+          reevaluate = true
+          graphChanges = append(graphChanges, ifName+":new")
         } else {
           if ifName != "CPU port" {
 
@@ -1555,6 +1557,8 @@ if key == "ifOperStatus" && !debug_printed {
       for ifName, _ := range old.VM("interfaces") {
         if !dev.EvM("interfaces", ifName) {
           logger.Event("if_gone", ifName)
+          reevaluate = true
+          graphChanges = append(graphChanges, ifName+":gone")
         }
       }
 
