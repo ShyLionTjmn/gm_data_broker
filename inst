@@ -1,0 +1,8 @@
+#!/bin/sh
+
+PROG=gm_data_broker
+
+systemctl stop $PROG
+cp -f $PROG /usr/local/sbin
+systemctl start $PROG
+systemctl status $PROG
