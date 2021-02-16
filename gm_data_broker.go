@@ -332,7 +332,7 @@ func myHttpHandlerRoot(w http.ResponseWriter, req *http.Request) {
       // copy scalar values and slices
       for _, key := range []string{"data_ip", "dhcpSnoopingEnable", "dhcpSnoopingStatisticDropPktsNum", "dhcpSnoopingVlanEnable", "id", "last_seen", "memorySize", "memoryUsed",
         "model_long", "model_short", "overall_status", "short_name", "sysContact", "sysDescr", "sysLocation", "sysObjectID", "sysUpTime", "sysUpTimeStr",
-        "CiscoConfChange", "CiscoConfSave",
+        "CiscoConfChange", "CiscoConfSave", "powerState",
         "interfaces_sorted"} {
         //for
         if _a, ok := dev_h.VAe(key); ok {
