@@ -1108,6 +1108,7 @@ func process_ip_data(wg *sync.WaitGroup, ip string, startup bool) {
     if opt_v > 0 {
       color.Yellow("Dev id changed. Previous data purged: %s, %s", prev_id, ip)
     }
+    data.VM("dev_list", ip)["id"] = dev_id
   } else {
     data.VM("dev_list", ip)["id"] = dev_id
 
