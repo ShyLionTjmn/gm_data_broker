@@ -20,7 +20,7 @@ import (
   // "github.com/davecgh/go-spew/spew"
   "github.com/fatih/color"
 
-  . "github.com/ShyLionTjmn/aux"
+  . "github.com/ShyLionTjmn/mapaux"
   . "github.com/ShyLionTjmn/decode_dev"
   . "github.com/ShyLionTjmn/gomapper_aux"
 
